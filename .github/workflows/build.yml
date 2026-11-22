@@ -108,14 +108,17 @@ jobs:
           import android.view.*
           import android.view.accessibility.AccessibilityEvent
           import android.widget.*
+          import java.nio.ByteBuffer
           import kotlin.math.abs
 
           // ===== 조절용 설정값 =====
-          const val BATCH = 2            // 한 번 인식할 때마다 누르는 횟수
-          const val GAP = 55L            // 연속 터치 간격(ms)
-          const val SETTLE = 100L        // 터치 후 화면 안정 대기(ms)
+          const val BATCH = 3            // 한 번 인식할 때마다 누르는 횟수 (클수록 빠름)
+          const val GAP = 40L            // 연속 터치 간격(ms) (작을수록 빠름)
+          const val LAT = 90L            // 터치 후 화면 반영 대기(ms) (작을수록 빠르지만 실수 증가)
           const val TURN_CLIMBS = true   // 방향전환 버튼이 올라가기도 같이 하면 true
           const val MATCH = 35f          // 블록 인식 허용 오차(작을수록 엄격)
+
+          class Fr(val p: List<Int>, val prev: List<Int>, val t: Long)
 
           class TapService : AccessibilityService() {
               companion object { @Volatile var inst: TapService? = null }
@@ -126,7 +129,7 @@ jobs:
               fun tap(x: Float, y: Float) {
                   val p = Path().apply { moveTo(x, y) }
                   val g = GestureDescription.Builder()
-                      .addStroke(GestureDescription.StrokeDescription(p, 0, 25)).build()
+                      .addStroke(GestureDescription.StrokeDescription(p, 0, 15)).build()
                   dispatchGesture(g, null, null)
               }
           }
@@ -166,8 +169,10 @@ jobs:
               @Volatile var run = false
               @Volatile var active = false
               @Volatile var faceRight = true
+              @Volatile var fr = Fr(emptyList(), emptyList(), 0L)
               var mp: MediaProjection? = null
               var reader: ImageReader? = null
+              var ht: HandlerThread? = null
               var wm: WindowManager? = null
               var ov: View? = null
               var W = 0
@@ -192,7 +197,9 @@ jobs:
                   W = pt.x; H = pt.y
                   mp = getSystemService(MediaProjectionManager::class.java).getMediaProjection(rc, d)
                   mp!!.registerCallback(object : MediaProjection.Callback() {}, Handler(Looper.getMainLooper()))
-                  reader = ImageReader.newInstance(W, H, PixelFormat.RGBA_8888, 2)
+                  reader = ImageReader.newInstance(W, H, PixelFormat.RGBA_8888, 3)
+                  ht = HandlerThread("ir").also { it.start() }
+                  reader!!.setOnImageAvailableListener({ r -> onFrame(r) }, Handler(ht!!.looper))
                   mp!!.createVirtualDisplay("c", W, H, resources.displayMetrics.densityDpi,
                       DisplayManager.VIRTUAL_DISPLAY_FLAG_AUTO_MIRROR, reader!!.surface, null, null)
                   showOverlay()
@@ -217,72 +224,92 @@ jobs:
                   ov = l
               }
 
+              // 새 프레임이 올 때마다 계단 방향을 미리 인식해 둔다
+              fun onFrame(r: ImageReader) {
+                  val img = try { r.acquireLatestImage() } catch (e: Exception) { null }
+                  if (img == null) return
+                  try {
+                      val pl = img.planes[0]
+                      val p = analyze(pl.buffer, pl.rowStride, pl.pixelStride)
+                      fr = Fr(p, fr.p, SystemClock.uptimeMillis())
+                  } catch (e: Exception) {
+                  } finally {
+                      img.close()
+                  }
+              }
+
+              fun analyze(buf: ByteBuffer, rs: Int, ps: Int): List<Int> {
+                  val fx = W / 1080f
+                  val fy = H / 2340f
+                  fun px(x: Int, y: Int, c: Int): Int = buf.get(y * rs + x * ps + c).toInt() and 255
+                  // 현재 발판(화면 중앙 아래 블록)을 기준 모양으로 삼아 비교
+                  fun diff(cx: Int, cy: Int): Float {
+                      var s = 0
+                      var n = 0
+                      var dx = -70
+                      while (dx <= 70) {
+                          var dy = -30
+                          while (dy <= 30) {
+                              val x = ((cx + dx) * fx).toInt()
+                              val y = ((cy + dy) * fy).toInt()
+                              if (x in 0 until W && y in 0 until H) {
+                                  val tx = ((540 + dx) * fx).toInt()
+                                  val ty = ((1498 + dy) * fy).toInt()
+                                  for (c in 0..2) s += abs(px(x, y, c) - px(tx, ty, c))
+                                  n++
+                              }
+                              dy += 10
+                          }
+                          dx += 10
+                      }
+                      return if (n < 30) -1f else s / (n * 3f)
+                  }
+                  val dirs = ArrayList<Int>()
+                  var col = 0
+                  for (k in 1..8) {
+                      val cy = 1498 - 90 * k
+                      val a = diff(540 + 165 * (col - 1), cy)
+                      val b = diff(540 + 165 * (col + 1), cy)
+                      val ma = a >= 0 && a < MATCH
+                      val mb = b >= 0 && b < MATCH
+                      val d = when {
+                          ma && mb -> 0
+                          ma -> -1
+                          mb -> 1
+                          a < 0 && b >= 0 -> -1
+                          b < 0 && a >= 0 -> 1
+                          col - 1 == 0 && k <= 5 -> -1
+                          col + 1 == 0 && k <= 5 -> 1
+                          else -> 0
+                      }
+                      if (d == 0) break
+                      dirs.add(d)
+                      col += d
+                  }
+                  return dirs
+              }
+
               fun loop() {
                   var was = false
                   var face = 1
+                  var tapTime = 0L
                   val fx = W / 1080f
                   val fy = H / 2340f
                   while (run) {
                       try {
                           if (!active) { was = false; Thread.sleep(80); continue }
-                          if (!was) { was = true; face = if (faceRight) 1 else -1 }
-                          val img = reader!!.acquireLatestImage()
-                          if (img == null) { Thread.sleep(10); continue }
-                          val pl = img.planes[0]
-                          val buf = pl.buffer
-                          val rs = pl.rowStride
-                          val ps = pl.pixelStride
-                          fun px(x: Int, y: Int, c: Int): Int = buf.get(y * rs + x * ps + c).toInt() and 255
-                          // 현재 발판(화면 중앙 아래 블록)을 기준 모양으로 삼아 비교
-                          fun diff(cx: Int, cy: Int): Float {
-                              var s = 0
-                              var n = 0
-                              var dx = -70
-                              while (dx <= 70) {
-                                  var dy = -30
-                                  while (dy <= 30) {
-                                      val x = ((cx + dx) * fx).toInt()
-                                      val y = ((cy + dy) * fy).toInt()
-                                      if (x in 0 until W && y in 0 until H) {
-                                          val tx = ((540 + dx) * fx).toInt()
-                                          val ty = ((1498 + dy) * fy).toInt()
-                                          for (c in 0..2) s += abs(px(x, y, c) - px(tx, ty, c))
-                                          n++
-                                      }
-                                      dy += 10
-                                  }
-                                  dx += 10
-                              }
-                              return if (n < 30) -1f else s / (n * 3f)
-                          }
-                          val dirs = ArrayList<Int>()
-                          var col = 0
-                          for (k in 1..8) {
-                              val cy = 1498 - 90 * k
-                              val a = diff(540 + 165 * (col - 1), cy)
-                              val b = diff(540 + 165 * (col + 1), cy)
-                              val ma = a >= 0 && a < MATCH
-                              val mb = b >= 0 && b < MATCH
-                              val d = when {
-                                  ma && mb -> if (a <= b) -1 else 1
-                                  ma -> -1
-                                  mb -> 1
-                                  a < 0 && b >= 0 -> -1
-                                  b < 0 && a >= 0 -> 1
-                                  col - 1 == 0 && k <= 5 -> -1
-                                  col + 1 == 0 && k <= 5 -> 1
-                                  else -> 0
-                              }
-                              if (d == 0) break
-                              dirs.add(d)
-                              col += d
-                          }
-                          img.close()
-                          if (dirs.isEmpty()) { Thread.sleep(20); continue }
+                          if (!was) { was = true; face = if (faceRight) 1 else -1; tapTime = 0L }
+                          val now = SystemClock.uptimeMillis()
+                          val f = fr
+                          // 터치 이후의 새 화면이고, 화면 움직임이 멈췄을 때만 실행
+                          val ready = f.p.isNotEmpty() &&
+                              (f.t > tapTime + LAT || now - tapTime > 350) &&
+                              (f.p == f.prev || now - f.t > 40)
+                          if (!ready) { Thread.sleep(4); continue }
                           val ts = TapService.inst
-                          val n = minOf(dirs.size, BATCH)
+                          val n = minOf(f.p.size, BATCH)
                           for (i in 0 until n) {
-                              val d = dirs[i]
+                              val d = f.p[i]
                               if (d == face) {
                                   ts?.tap(895f * fx, 1950f * fy)
                               } else {
@@ -292,9 +319,9 @@ jobs:
                               face = d
                               Thread.sleep(GAP)
                           }
-                          Thread.sleep(SETTLE)
+                          tapTime = SystemClock.uptimeMillis()
                       } catch (e: Exception) {
-                          Thread.sleep(50)
+                          Thread.sleep(30)
                       }
                   }
               }
@@ -303,6 +330,8 @@ jobs:
                   run = false
                   try { wm?.removeView(ov) } catch (e: Exception) {}
                   try { mp?.stop() } catch (e: Exception) {}
+                  try { reader?.close() } catch (e: Exception) {}
+                  try { ht?.quitSafely() } catch (e: Exception) {}
                   super.onDestroy()
               }
           }
