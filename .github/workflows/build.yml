@@ -114,11 +114,25 @@ jobs:
           // ===== 조절용 설정값 =====
           const val BATCH = 3            // 한 번 인식할 때마다 누르는 횟수 (클수록 빠름)
           const val GAP = 40L            // 연속 터치 간격(ms) (작을수록 빠름)
-          const val LAT = 90L            // 터치 후 화면 반영 대기(ms) (작을수록 빠르지만 실수 증가)
+          const val LAT = 90L            // 터치 후 화면 반영 대기(ms)
           const val TURN_CLIMBS = true   // 방향전환 버튼이 올라가기도 같이 하면 true
-          const val MATCH = 35f          // 블록 인식 허용 오차(작을수록 엄격)
+          const val MF = 0.6f            // 블록으로 인정하는 일치율 (높을수록 엄격)
+          const val CLEAR = 0.25f        // 확실히 블록이 아니라고 보는 일치율
 
-          class Fr(val p: List<Int>, val prev: List<Int>, val t: Long)
+          // 발판 블록 기준 모양 (스크린샷에서 추출)
+          const val REFHEX =
+              "35835836936947b9cf9cf9cf47b9cf9cfacfacfacfacf37cacf9cf9cf" +
+              "24624624624647bacf7ae7ae47b7ae7af7af7af8ae8ae37cacf8ad8ad" +
+              "24624623623646aacf7af7af47b8af7af7af7af7af7af37cacf8ae8ae" +
+              "24624623623646aacf7af7af47b8af7af7af7af7af8af37cacf8ae8ae" +
+              "12312312312323537c37c37c37c37c37c37c37c37c37c37c37c37c37c" +
+              "35735735735746aacfacfacfacfacfacf37cacfacfacfacfacf9cf9cf" +
+              "24624624624646aacf8af8af8af7af7af37cacf8af8af8af8af7af7af" +
+              "24624624624646aacf8af8af8af7af7af37cacf8af8af8af8af7af7af" +
+              "12412412412524647b37c37c37c37c37c37c37b37c37c37c37c37c37c"
+          val REF: IntArray = IntArray(513) { REFHEX[it].digitToInt(16) * 16 + 8 }
+
+          class Fr(val ok: Boolean, val face: Int, val dirs: List<Int>, val t: Long, val stable: Int)
 
           class TapService : AccessibilityService() {
               companion object { @Volatile var inst: TapService? = null }
@@ -141,7 +155,7 @@ jobs:
                   fun btn(t: String, f: () -> Unit) {
                       l.addView(Button(this).apply { text = t; setOnClickListener { f() } })
                   }
-                  l.addView(TextView(this).apply { text = "순서대로 1 → 2 → 3 누른 뒤 게임을 켜세요.\n게임 화면에서 왼쪽 위 반투명 버튼으로 시작/정지합니다." })
+                  l.addView(TextView(this).apply { text = "순서대로 1 → 2 → 3 누른 뒤 게임을 켜세요.\n게임 화면에서 왼쪽 위 반투명 버튼으로 시작/정지합니다.\n게임 맨 처음 칸에서만 틀리면 '첫칸' 버튼을 바꿔보세요." })
                   btn("1. 다른 앱 위에 표시 허용") {
                       startActivity(Intent(Settings.ACTION_MANAGE_OVERLAY_PERMISSION, Uri.parse("package:$packageName")))
                   }
@@ -168,8 +182,8 @@ jobs:
           class CaptureService : Service() {
               @Volatile var run = false
               @Volatile var active = false
-              @Volatile var faceRight = true
-              @Volatile var fr = Fr(emptyList(), emptyList(), 0L)
+              @Volatile var firstTurn = false
+              @Volatile var fr = Fr(false, 0, emptyList(), 0L, 0)
               var mp: MediaProjection? = null
               var reader: ImageReader? = null
               var ht: HandlerThread? = null
@@ -211,9 +225,9 @@ jobs:
               fun showOverlay() {
                   val l = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; alpha = 0.5f; setBackgroundColor(Color.BLACK) }
                   val b1 = Button(this).apply { text = "▶ 시작"; textSize = 12f }
-                  val b2 = Button(this).apply { text = "방향:→"; textSize = 12f }
+                  val b2 = Button(this).apply { text = "첫칸:오르기"; textSize = 12f }
                   b1.setOnClickListener { active = !active; b1.text = if (active) "■ 정지" else "▶ 시작" }
-                  b2.setOnClickListener { faceRight = !faceRight; b2.text = if (faceRight) "방향:→" else "방향:←" }
+                  b2.setOnClickListener { firstTurn = !firstTurn; b2.text = if (firstTurn) "첫칸:전환" else "첫칸:오르기" }
                   l.addView(b1); l.addView(b2)
                   val lp = WindowManager.LayoutParams(
                       WindowManager.LayoutParams.WRAP_CONTENT, WindowManager.LayoutParams.WRAP_CONTENT,
@@ -224,101 +238,133 @@ jobs:
                   ov = l
               }
 
-              // 새 프레임이 올 때마다 계단 방향을 미리 인식해 둔다
+              // 새 프레임이 올 때마다 화면을 분석해 둔다
               fun onFrame(r: ImageReader) {
-                  val img = try { r.acquireLatestImage() } catch (e: Exception) { null }
-                  if (img == null) return
+                  val img = (try { r.acquireLatestImage() } catch (e: Exception) { null }) ?: return
                   try {
                       val pl = img.planes[0]
-                      val p = analyze(pl.buffer, pl.rowStride, pl.pixelStride)
-                      fr = Fr(p, fr.p, SystemClock.uptimeMillis())
+                      val a = analyze(pl.buffer, pl.rowStride, pl.pixelStride)
+                      val o = fr
+                      val now = SystemClock.uptimeMillis()
+                      fr = if (a == null) Fr(false, 0, emptyList(), now, 0)
+                      else Fr(true, a.first, a.second, now,
+                          if (o.ok && o.face == a.first && o.dirs == a.second) o.stable + 1 else 0)
                   } catch (e: Exception) {
                   } finally {
                       img.close()
                   }
               }
 
-              fun analyze(buf: ByteBuffer, rs: Int, ps: Int): List<Int> {
+              // 반환: (현재 바라보는 방향 +1/-1/0=모름, 앞으로 올라갈 방향 목록). 인식 불가면 null
+              fun analyze(buf: ByteBuffer, rs: Int, ps: Int): Pair<Int, List<Int>>? {
                   val fx = W / 1080f
                   val fy = H / 2340f
-                  fun px(x: Int, y: Int, c: Int): Int = buf.get(y * rs + x * ps + c).toInt() and 255
-                  // 현재 발판(화면 중앙 아래 블록)을 기준 모양으로 삼아 비교
-                  fun diff(cx: Int, cy: Int): Float {
-                      var s = 0
+                  // (cx,cy) 위치가 발판 블록과 얼마나 닮았는지 0~1, 화면 밖이면 -1
+                  fun score(cx: Int, cy: Int): Float {
                       var n = 0
-                      var dx = -70
-                      while (dx <= 70) {
-                          var dy = -30
-                          while (dy <= 30) {
+                      var m = 0
+                      var i = 0
+                      var dy = -32
+                      while (dy <= 32) {
+                          var dx = -72
+                          while (dx <= 72) {
                               val x = ((cx + dx) * fx).toInt()
                               val y = ((cy + dy) * fy).toInt()
                               if (x in 0 until W && y in 0 until H) {
-                                  val tx = ((540 + dx) * fx).toInt()
-                                  val ty = ((1498 + dy) * fy).toInt()
-                                  for (c in 0..2) s += abs(px(x, y, c) - px(tx, ty, c))
+                                  val o = y * rs + x * ps
+                                  val r = buf.get(o).toInt() and 255
+                                  val g = buf.get(o + 1).toInt() and 255
+                                  val b = buf.get(o + 2).toInt() and 255
+                                  val q = i * 3
+                                  if (abs(r - REF[q]) + abs(g - REF[q + 1]) + abs(b - REF[q + 2]) < 60) m++
                                   n++
                               }
-                              dy += 10
+                              i++
+                              dx += 8
                           }
-                          dx += 10
+                          dy += 8
                       }
-                      return if (n < 30) -1f else s / (n * 3f)
+                      return if (n < 77) -1f else m.toFloat() / n
                   }
+                  // 지금 서 있는 발판이 제자리에 있어야 정상 화면 (스크롤 중이면 제외)
+                  if (score(540, 1498) < 0.75f) return null
+                  // 바로 아래 발판이 어느 쪽이었는지 보면 지금 바라보는 방향을 알 수 있음
+                  val sa = score(375, 1588)
+                  val sb = score(705, 1588)
+                  val face = if (sa >= MF && sb < MF) 1 else if (sb >= MF && sa < MF) -1 else 0
                   val dirs = ArrayList<Int>()
                   var col = 0
                   for (k in 1..8) {
                       val cy = 1498 - 90 * k
-                      val a = diff(540 + 165 * (col - 1), cy)
-                      val b = diff(540 + 165 * (col + 1), cy)
-                      val ma = a >= 0 && a < MATCH
-                      val mb = b >= 0 && b < MATCH
+                      val a = score(540 + 165 * (col - 1), cy)
+                      val b = score(540 + 165 * (col + 1), cy)
+                      val ma = a >= MF
+                      val mb = b >= MF
                       val d = when {
                           ma && mb -> 0
                           ma -> -1
                           mb -> 1
-                          a < 0 && b >= 0 -> -1
-                          b < 0 && a >= 0 -> 1
-                          col - 1 == 0 && k <= 5 -> -1
-                          col + 1 == 0 && k <= 5 -> 1
+                          a < 0f && b >= 0f && b <= CLEAR -> -1
+                          b < 0f && a >= 0f && a <= CLEAR -> 1
+                          k <= 6 && col - 1 == 0 && b >= 0f && b <= CLEAR -> -1
+                          k <= 6 && col + 1 == 0 && a >= 0f && a <= CLEAR -> 1
                           else -> 0
                       }
                       if (d == 0) break
                       dirs.add(d)
                       col += d
                   }
-                  return dirs
+                  return if (dirs.isEmpty()) null else Pair(face, dirs)
               }
 
               fun loop() {
                   var was = false
-                  var face = 1
                   var tapTime = 0L
+                  var badSince = 0L
+                  var last = 0
+                  var exp: List<Int>? = null
+                  var expFace = 0
                   val fx = W / 1080f
                   val fy = H / 2340f
                   while (run) {
                       try {
                           if (!active) { was = false; Thread.sleep(80); continue }
-                          if (!was) { was = true; face = if (faceRight) 1 else -1; tapTime = 0L }
+                          if (!was) { was = true; tapTime = 0L; badSince = 0L; last = 0; exp = null }
                           val now = SystemClock.uptimeMillis()
                           val f = fr
-                          // 터치 이후의 새 화면이고, 화면 움직임이 멈췄을 때만 실행
-                          val ready = f.p.isNotEmpty() &&
-                              (f.t > tapTime + LAT || now - tapTime > 350) &&
-                              (f.p == f.prev || now - f.t > 40)
-                          if (!ready) { Thread.sleep(4); continue }
+                          if (!f.ok) {
+                              if (badSince == 0L) badSince = now
+                              if (now - badSince > 800) { last = 0; exp = null }
+                              Thread.sleep(3)
+                              continue
+                          }
+                          badSince = 0L
+                          // 직전에 예상한 계단 모양과 맞으면 바로 진행, 아니면 화면이 안정될 때까지 대기
+                          val e = exp
+                          val m = if (e == null) 0 else minOf(e.size, f.dirs.size)
+                          val consistent = e != null && m > 0 && f.dirs.take(m) == e.take(m) &&
+                              (f.face == 0 || f.face == expFace)
+                          val fresh = f.t > tapTime + LAT || now - tapTime > 350
+                          val settled = consistent || f.stable >= 2 || now - f.t > 60
+                          if (!fresh || !settled) { Thread.sleep(3); continue }
                           val ts = TapService.inst
-                          val n = minOf(f.p.size, BATCH)
+                          var face = if (f.face != 0) f.face else last
+                          val n = minOf(f.dirs.size, BATCH)
                           for (i in 0 until n) {
-                              val d = f.p[i]
-                              if (d == face) {
-                                  ts?.tap(895f * fx, 1950f * fy)
-                              } else {
+                              val d = f.dirs[i]
+                              val turn = if (face == 0) firstTurn else d != face
+                              if (turn) {
                                   ts?.tap(185f * fx, 1950f * fy)
                                   if (!TURN_CLIMBS) { Thread.sleep(GAP); ts?.tap(895f * fx, 1950f * fy) }
+                              } else {
+                                  ts?.tap(895f * fx, 1950f * fy)
                               }
                               face = d
                               Thread.sleep(GAP)
                           }
+                          last = face
+                          exp = f.dirs.drop(n)
+                          expFace = face
                           tapTime = SystemClock.uptimeMillis()
                       } catch (e: Exception) {
                           Thread.sleep(30)
