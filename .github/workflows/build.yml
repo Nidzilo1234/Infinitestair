@@ -112,12 +112,14 @@ jobs:
           import kotlin.math.abs
 
           // ===== 조절용 설정값 =====
-          const val BATCH = 3            // 한 번 인식할 때마다 누르는 횟수 (클수록 빠름)
-          const val GAP = 40L            // 연속 터치 간격(ms) (작을수록 빠름)
-          const val LAT = 90L            // 터치 후 화면 반영 대기(ms)
+          const val GAP = 70L            // 터치 간격(ms). 작을수록 빠름 (50~90 권장)
+          const val LAT = 150L           // 멈춘 뒤 화면 확인 전 대기(ms). 크게 잡을수록 안전
+          const val LS = 90L             // 터치가 화면에 반영되기까지 걸리는 시간 추정(ms)
           const val TURN_CLIMBS = true   // 방향전환 버튼이 올라가기도 같이 하면 true
           const val MF = 0.6f            // 블록으로 인정하는 일치율 (높을수록 엄격)
+          const val SOFT = 0.35f         // 일부 가려진 블록도 인정하는 최소 일치율
           const val CLEAR = 0.25f        // 확실히 블록이 아니라고 보는 일치율
+          const val S0 = 0.6f            // 현재 발판이 제자리에 있다고 보는 일치율
 
           // 발판 블록 기준 모양 (스크린샷에서 추출)
           const val REFHEX =
@@ -155,7 +157,7 @@ jobs:
                   fun btn(t: String, f: () -> Unit) {
                       l.addView(Button(this).apply { text = t; setOnClickListener { f() } })
                   }
-                  l.addView(TextView(this).apply { text = "순서대로 1 → 2 → 3 누른 뒤 게임을 켜세요.\n게임 화면에서 왼쪽 위 반투명 버튼으로 시작/정지합니다.\n게임 맨 처음 칸에서만 틀리면 '첫칸' 버튼을 바꿔보세요." })
+                  l.addView(TextView(this).apply { text = "순서대로 1 → 2 → 3 누른 뒤 게임을 켜세요.\n게임 화면 왼쪽 위 반투명 버튼으로 시작/정지합니다.\n게임 맨 처음 칸에서만 틀리면 '첫칸' 버튼을 바꿔보세요." })
                   btn("1. 다른 앱 위에 표시 허용") {
                       startActivity(Intent(Settings.ACTION_MANAGE_OVERLAY_PERMISSION, Uri.parse("package:$packageName")))
                   }
@@ -183,7 +185,11 @@ jobs:
               @Volatile var run = false
               @Volatile var active = false
               @Volatile var firstTurn = false
+              @Volatile var relearn = false
+              @Volatile var ref: IntArray = REF
               @Volatile var fr = Fr(false, 0, emptyList(), 0L, 0)
+              @Volatile var tv: TextView? = null
+              val ui = Handler(Looper.getMainLooper())
               var mp: MediaProjection? = null
               var reader: ImageReader? = null
               var ht: HandlerThread? = null
@@ -226,9 +232,11 @@ jobs:
                   val l = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; alpha = 0.5f; setBackgroundColor(Color.BLACK) }
                   val b1 = Button(this).apply { text = "▶ 시작"; textSize = 12f }
                   val b2 = Button(this).apply { text = "첫칸:오르기"; textSize = 12f }
+                  val t = TextView(this).apply { textSize = 11f; setTextColor(Color.WHITE); setPadding(12, 0, 12, 0); text = "대기" }
                   b1.setOnClickListener { active = !active; b1.text = if (active) "■ 정지" else "▶ 시작" }
                   b2.setOnClickListener { firstTurn = !firstTurn; b2.text = if (firstTurn) "첫칸:전환" else "첫칸:오르기" }
-                  l.addView(b1); l.addView(b2)
+                  l.addView(b1); l.addView(b2); l.addView(t)
+                  tv = t
                   val lp = WindowManager.LayoutParams(
                       WindowManager.LayoutParams.WRAP_CONTENT, WindowManager.LayoutParams.WRAP_CONTENT,
                       WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY,
@@ -243,7 +251,17 @@ jobs:
                   val img = (try { r.acquireLatestImage() } catch (e: Exception) { null }) ?: return
                   try {
                       val pl = img.planes[0]
-                      val a = analyze(pl.buffer, pl.rowStride, pl.pixelStride)
+                      val buf = pl.buffer
+                      val rs = pl.rowStride
+                      val ps = pl.pixelStride
+                      if (relearn) {
+                          // 블록 모양이 바뀐 경우 대비: 지금 발판 모양을 새 기준으로 시험해 보고, 안 되면 되돌린다
+                          relearn = false
+                          val old = ref
+                          ref = sample(buf, rs, ps)
+                          if (analyze(buf, rs, ps) == null) ref = old
+                      }
+                      val a = analyze(buf, rs, ps)
                       val o = fr
                       val now = SystemClock.uptimeMillis()
                       fr = if (a == null) Fr(false, 0, emptyList(), now, 0)
@@ -255,10 +273,34 @@ jobs:
                   }
               }
 
+              fun sample(buf: ByteBuffer, rs: Int, ps: Int): IntArray {
+                  val fx = W / 1080f
+                  val fy = H / 2340f
+                  val out = IntArray(513)
+                  var i = 0
+                  var dy = -32
+                  while (dy <= 32) {
+                      var dx = -72
+                      while (dx <= 72) {
+                          val x = ((540 + dx) * fx).toInt()
+                          val y = ((1498 + dy) * fy).toInt()
+                          val o = y * rs + x * ps
+                          out[i * 3] = buf.get(o).toInt() and 255
+                          out[i * 3 + 1] = buf.get(o + 1).toInt() and 255
+                          out[i * 3 + 2] = buf.get(o + 2).toInt() and 255
+                          i++
+                          dx += 8
+                      }
+                      dy += 8
+                  }
+                  return out
+              }
+
               // 반환: (현재 바라보는 방향 +1/-1/0=모름, 앞으로 올라갈 방향 목록). 인식 불가면 null
               fun analyze(buf: ByteBuffer, rs: Int, ps: Int): Pair<Int, List<Int>>? {
                   val fx = W / 1080f
                   val fy = H / 2340f
+                  val rf = ref
                   // (cx,cy) 위치가 발판 블록과 얼마나 닮았는지 0~1, 화면 밖이면 -1
                   fun score(cx: Int, cy: Int): Float {
                       var n = 0
@@ -276,7 +318,7 @@ jobs:
                                   val g = buf.get(o + 1).toInt() and 255
                                   val b = buf.get(o + 2).toInt() and 255
                                   val q = i * 3
-                                  if (abs(r - REF[q]) + abs(g - REF[q + 1]) + abs(b - REF[q + 2]) < 60) m++
+                                  if (abs(r - rf[q]) + abs(g - rf[q + 1]) + abs(b - rf[q + 2]) < 60) m++
                                   n++
                               }
                               i++
@@ -287,14 +329,14 @@ jobs:
                       return if (n < 77) -1f else m.toFloat() / n
                   }
                   // 지금 서 있는 발판이 제자리에 있어야 정상 화면 (스크롤 중이면 제외)
-                  if (score(540, 1498) < 0.75f) return null
+                  if (score(540, 1498) < S0) return null
                   // 바로 아래 발판이 어느 쪽이었는지 보면 지금 바라보는 방향을 알 수 있음
                   val sa = score(375, 1588)
                   val sb = score(705, 1588)
                   val face = if (sa >= MF && sb < MF) 1 else if (sb >= MF && sa < MF) -1 else 0
                   val dirs = ArrayList<Int>()
                   var col = 0
-                  for (k in 1..8) {
+                  for (k in 1..10) {
                       val cy = 1498 - 90 * k
                       val a = score(540 + 165 * (col - 1), cy)
                       val b = score(540 + 165 * (col + 1), cy)
@@ -308,6 +350,8 @@ jobs:
                           b < 0f && a >= 0f && a <= CLEAR -> 1
                           k <= 6 && col - 1 == 0 && b >= 0f && b <= CLEAR -> -1
                           k <= 6 && col + 1 == 0 && a >= 0f && a <= CLEAR -> 1
+                          a >= SOFT && a - maxOf(b, 0f) >= 0.2f -> -1
+                          b >= SOFT && b - maxOf(a, 0f) >= 0.2f -> 1
                           else -> 0
                       }
                       if (d == 0) break
@@ -317,42 +361,93 @@ jobs:
                   return if (dirs.isEmpty()) null else Pair(face, dirs)
               }
 
+              // 계획(P)을 세워 끊김 없이 계속 누르고, 화면은 확인용으로만 사용
               fun loop() {
-                  var was = false
-                  var tapTime = 0L
-                  var badSince = 0L
-                  var last = 0
-                  var exp: List<Int>? = null
-                  var expFace = 0
                   val fx = W / 1080f
                   val fy = H / 2340f
+                  val P = ArrayList<Int>()
+                  val tapT = ArrayList<Long>()
+                  var issued = 0
+                  var face = 0
+                  var usedT = 0L
+                  var lastTap = 0L
+                  var badSince = 0L
+                  var lastLearn = 0L
+                  var lastUi = 0L
+                  var was = false
+                  fun idxAt(t: Long): Int {
+                      var c = issued
+                      while (c > 0 && tapT[c - 1] > t) c--
+                      return c
+                  }
                   while (run) {
                       try {
                           if (!active) { was = false; Thread.sleep(80); continue }
-                          if (!was) { was = true; tapTime = 0L; badSince = 0L; last = 0; exp = null }
                           val now = SystemClock.uptimeMillis()
+                          if (!was) {
+                              was = true
+                              P.clear(); tapT.clear()
+                              issued = 0; face = 0; usedT = 0L; lastTap = 0L; badSince = 0L
+                              ref = REF
+                          }
                           val f = fr
+                          val rest0 = P.size - issued
+                          if (now - lastUi > 300) {
+                              lastUi = now
+                              val st = (if (f.ok) "인식O" else "인식X") + " 남은" + rest0
+                              ui.post { tv?.text = st }
+                          }
                           if (!f.ok) {
                               if (badSince == 0L) badSince = now
-                              if (now - badSince > 800) { last = 0; exp = null }
-                              Thread.sleep(3)
-                              continue
+                              if (rest0 == 0 && now - badSince > 800) {
+                                  P.clear(); tapT.clear(); issued = 0; face = 0
+                              }
+                              if (rest0 == 0 && now - badSince > 1500 && now - lastLearn > 3000) {
+                                  lastLearn = now
+                                  relearn = true
+                              }
+                          } else {
+                              badSince = 0L
+                              if (f.t != usedT) {
+                                  if (rest0 > 0) {
+                                      // 진행 중: 화면에 반영된 칸 수를 추정해 계획과 맞는지 확인하고, 안전한 만큼만 계획을 늘린다
+                                      val ap = idxAt(f.t - LS)
+                                      var tail: List<Int>? = null
+                                      for (sh in intArrayOf(0, -1, 1, -2, 2, -3, 3)) {
+                                          val a = ap + sh
+                                          val off = issued - a
+                                          if (a < 0 || a > issued || off >= f.dirs.size) continue
+                                          if (a >= 1 && f.face != 0 && P[a - 1] != f.face) continue
+                                          val rest = f.dirs.subList(off, f.dirs.size)
+                                          val m = minOf(rest.size, rest0)
+                                          if (m >= 3 && rest.subList(0, m) == P.subList(issued, issued + m)) {
+                                              val tl = rest.subList(minOf(rest0, rest.size), rest.size)
+                                              val t0 = tail
+                                              if (t0 == null) {
+                                                  tail = tl
+                                              } else {
+                                                  var i = 0
+                                                  while (i < t0.size && i < tl.size && t0[i] == tl[i]) i++
+                                                  tail = t0.subList(0, i)
+                                              }
+                                          }
+                                      }
+                                      val tt = tail
+                                      if (tt != null && tt.isNotEmpty()) P.addAll(tt)
+                                      usedT = f.t
+                                  } else if ((f.t > lastTap + LAT || now - lastTap > 350) &&
+                                      (f.stable >= 2 || now - f.t > 60)) {
+                                      // 계획이 바닥났을 때: 화면이 완전히 멈춘 뒤의 모습으로 새로 계획
+                                      usedT = f.t
+                                      P.addAll(f.dirs)
+                                      if (f.face != 0) face = f.face
+                                  }
+                              }
                           }
-                          badSince = 0L
-                          // 직전에 예상한 계단 모양과 맞으면 바로 진행, 아니면 화면이 안정될 때까지 대기
-                          val e = exp
-                          val m = if (e == null) 0 else minOf(e.size, f.dirs.size)
-                          val consistent = e != null && m > 0 && f.dirs.take(m) == e.take(m) &&
-                              (f.face == 0 || f.face == expFace)
-                          val fresh = f.t > tapTime + LAT || now - tapTime > 350
-                          val settled = consistent || f.stable >= 2 || now - f.t > 60
-                          if (!fresh || !settled) { Thread.sleep(3); continue }
-                          val ts = TapService.inst
-                          var face = if (f.face != 0) f.face else last
-                          val n = minOf(f.dirs.size, BATCH)
-                          for (i in 0 until n) {
-                              val d = f.dirs[i]
+                          if (issued < P.size) {
+                              val d = P[issued]
                               val turn = if (face == 0) firstTurn else d != face
+                              val ts = TapService.inst
                               if (turn) {
                                   ts?.tap(185f * fx, 1950f * fy)
                                   if (!TURN_CLIMBS) { Thread.sleep(GAP); ts?.tap(895f * fx, 1950f * fy) }
@@ -360,12 +455,13 @@ jobs:
                                   ts?.tap(895f * fx, 1950f * fy)
                               }
                               face = d
+                              issued++
+                              lastTap = SystemClock.uptimeMillis()
+                              tapT.add(lastTap)
                               Thread.sleep(GAP)
+                          } else {
+                              Thread.sleep(3)
                           }
-                          last = face
-                          exp = f.dirs.drop(n)
-                          expFace = face
-                          tapTime = SystemClock.uptimeMillis()
                       } catch (e: Exception) {
                           Thread.sleep(30)
                       }
