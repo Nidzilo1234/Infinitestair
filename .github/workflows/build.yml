@@ -1,0 +1,315 @@
+name: build
+on:
+  workflow_dispatch:
+  push:
+jobs:
+  b:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 17
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: 8.9
+      - name: generate project
+        run: |
+          mkdir -p app/src/main/java/bot app/src/main/res/values app/src/main/res/xml
+          cat > settings.gradle.kts <<'E1'
+          pluginManagement { repositories { google(); mavenCentral(); gradlePluginPortal() } }
+          dependencyResolutionManagement { repositories { google(); mavenCentral() } }
+          rootProject.name = "bot"
+          include(":app")
+          E1
+          cat > build.gradle.kts <<'E2'
+          plugins {
+              id("com.android.application") version "8.5.2" apply false
+              id("org.jetbrains.kotlin.android") version "1.9.24" apply false
+          }
+          E2
+          echo "android.useAndroidX=true" > gradle.properties
+          cat > app/build.gradle.kts <<'E3'
+          plugins {
+              id("com.android.application")
+              id("org.jetbrains.kotlin.android")
+          }
+          android {
+              namespace = "bot"
+              compileSdk = 34
+              defaultConfig {
+                  applicationId = "bot.stairs"
+                  minSdk = 26
+                  targetSdk = 34
+                  versionCode = 1
+                  versionName = "1"
+              }
+              compileOptions {
+                  sourceCompatibility = JavaVersion.VERSION_17
+                  targetCompatibility = JavaVersion.VERSION_17
+              }
+              kotlinOptions { jvmTarget = "17" }
+          }
+          E3
+          cat > app/src/main/AndroidManifest.xml <<'E4'
+          <manifest xmlns:android="http://schemas.android.com/apk/res/android">
+              <uses-permission android:name="android.permission.SYSTEM_ALERT_WINDOW"/>
+              <uses-permission android:name="android.permission.FOREGROUND_SERVICE"/>
+              <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MEDIA_PROJECTION"/>
+              <application android:label="@string/app_name" android:theme="@android:style/Theme.DeviceDefault.Light">
+                  <activity android:name=".MainActivity" android:exported="true">
+                      <intent-filter>
+                          <action android:name="android.intent.action.MAIN"/>
+                          <category android:name="android.intent.category.LAUNCHER"/>
+                      </intent-filter>
+                  </activity>
+                  <service android:name=".CaptureService" android:exported="false"
+                      android:foregroundServiceType="mediaProjection"/>
+                  <service android:name=".TapService" android:exported="true"
+                      android:label="@string/app_name"
+                      android:permission="android.permission.BIND_ACCESSIBILITY_SERVICE">
+                      <intent-filter>
+                          <action android:name="android.accessibilityservice.AccessibilityService"/>
+                      </intent-filter>
+                      <meta-data android:name="android.accessibilityservice" android:resource="@xml/acc"/>
+                  </service>
+              </application>
+          </manifest>
+          E4
+          cat > app/src/main/res/values/strings.xml <<'E5'
+          <resources>
+              <string name="app_name">계단봇</string>
+              <string name="desc">게임 화면을 자동으로 터치합니다</string>
+          </resources>
+          E5
+          cat > app/src/main/res/xml/acc.xml <<'E6'
+          <accessibility-service xmlns:android="http://schemas.android.com/apk/res/android"
+              android:accessibilityEventTypes="typeWindowStateChanged"
+              android:accessibilityFeedbackType="feedbackGeneric"
+              android:canPerformGestures="true"
+              android:description="@string/desc" />
+          E6
+          cat > app/src/main/java/bot/Main.kt <<'E7'
+          package bot
+
+          import android.accessibilityservice.AccessibilityService
+          import android.accessibilityservice.GestureDescription
+          import android.app.*
+          import android.content.*
+          import android.content.pm.ServiceInfo
+          import android.graphics.*
+          import android.hardware.display.DisplayManager
+          import android.media.ImageReader
+          import android.media.projection.*
+          import android.net.Uri
+          import android.os.*
+          import android.provider.Settings
+          import android.view.*
+          import android.view.accessibility.AccessibilityEvent
+          import android.widget.*
+          import kotlin.math.abs
+
+          // ===== 조절용 설정값 =====
+          const val BATCH = 2            // 한 번 인식할 때마다 누르는 횟수
+          const val GAP = 55L            // 연속 터치 간격(ms)
+          const val SETTLE = 100L        // 터치 후 화면 안정 대기(ms)
+          const val TURN_CLIMBS = true   // 방향전환 버튼이 올라가기도 같이 하면 true
+          const val MATCH = 35f          // 블록 인식 허용 오차(작을수록 엄격)
+
+          class TapService : AccessibilityService() {
+              companion object { @Volatile var inst: TapService? = null }
+              override fun onServiceConnected() { inst = this }
+              override fun onUnbind(i: Intent?): Boolean { inst = null; return super.onUnbind(i) }
+              override fun onAccessibilityEvent(e: AccessibilityEvent?) {}
+              override fun onInterrupt() {}
+              fun tap(x: Float, y: Float) {
+                  val p = Path().apply { moveTo(x, y) }
+                  val g = GestureDescription.Builder()
+                      .addStroke(GestureDescription.StrokeDescription(p, 0, 25)).build()
+                  dispatchGesture(g, null, null)
+              }
+          }
+
+          class MainActivity : Activity() {
+              override fun onCreate(b: Bundle?) {
+                  super.onCreate(b)
+                  val l = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(40, 80, 40, 40) }
+                  fun btn(t: String, f: () -> Unit) {
+                      l.addView(Button(this).apply { text = t; setOnClickListener { f() } })
+                  }
+                  l.addView(TextView(this).apply { text = "순서대로 1 → 2 → 3 누른 뒤 게임을 켜세요.\n게임 화면에서 왼쪽 위 반투명 버튼으로 시작/정지합니다." })
+                  btn("1. 다른 앱 위에 표시 허용") {
+                      startActivity(Intent(Settings.ACTION_MANAGE_OVERLAY_PERMISSION, Uri.parse("package:$packageName")))
+                  }
+                  btn("2. 접근성 켜기 (계단봇 선택)") {
+                      startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS))
+                  }
+                  btn("3. 시작 (화면 캡처 허용)") {
+                      val mpm = getSystemService(MediaProjectionManager::class.java)
+                      startActivityForResult(mpm.createScreenCaptureIntent(), 1)
+                  }
+                  btn("종료") { stopService(Intent(this, CaptureService::class.java)) }
+                  setContentView(l)
+              }
+
+              override fun onActivityResult(rq: Int, rc: Int, d: Intent?) {
+                  super.onActivityResult(rq, rc, d)
+                  if (rq == 1 && rc == RESULT_OK && d != null) {
+                      startForegroundService(Intent(this, CaptureService::class.java).putExtra("rc", rc).putExtra("d", d))
+                      moveTaskToBack(true)
+                  }
+              }
+          }
+
+          class CaptureService : Service() {
+              @Volatile var run = false
+              @Volatile var active = false
+              @Volatile var faceRight = true
+              var mp: MediaProjection? = null
+              var reader: ImageReader? = null
+              var wm: WindowManager? = null
+              var ov: View? = null
+              var W = 0
+              var H = 0
+
+              override fun onBind(i: Intent?): IBinder? = null
+
+              override fun onStartCommand(i: Intent?, f: Int, id: Int): Int {
+                  val nm = getSystemService(NotificationManager::class.java)
+                  nm.createNotificationChannel(NotificationChannel("c", "bot", NotificationManager.IMPORTANCE_LOW))
+                  val n = Notification.Builder(this, "c").setContentTitle("계단봇 실행 중")
+                      .setSmallIcon(android.R.drawable.ic_menu_view).build()
+                  if (Build.VERSION.SDK_INT >= 29)
+                      startForeground(1, n, ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PROJECTION)
+                  else startForeground(1, n)
+                  if (i == null || run) return START_NOT_STICKY
+                  val rc = i.getIntExtra("rc", 0)
+                  val d = i.getParcelableExtra<Intent>("d") ?: return START_NOT_STICKY
+                  wm = getSystemService(WINDOW_SERVICE) as WindowManager
+                  val pt = Point()
+                  wm!!.defaultDisplay.getRealSize(pt)
+                  W = pt.x; H = pt.y
+                  mp = getSystemService(MediaProjectionManager::class.java).getMediaProjection(rc, d)
+                  mp!!.registerCallback(object : MediaProjection.Callback() {}, Handler(Looper.getMainLooper()))
+                  reader = ImageReader.newInstance(W, H, PixelFormat.RGBA_8888, 2)
+                  mp!!.createVirtualDisplay("c", W, H, resources.displayMetrics.densityDpi,
+                      DisplayManager.VIRTUAL_DISPLAY_FLAG_AUTO_MIRROR, reader!!.surface, null, null)
+                  showOverlay()
+                  run = true
+                  Thread { loop() }.start()
+                  return START_NOT_STICKY
+              }
+
+              fun showOverlay() {
+                  val l = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; alpha = 0.5f; setBackgroundColor(Color.BLACK) }
+                  val b1 = Button(this).apply { text = "▶ 시작"; textSize = 12f }
+                  val b2 = Button(this).apply { text = "방향:→"; textSize = 12f }
+                  b1.setOnClickListener { active = !active; b1.text = if (active) "■ 정지" else "▶ 시작" }
+                  b2.setOnClickListener { faceRight = !faceRight; b2.text = if (faceRight) "방향:→" else "방향:←" }
+                  l.addView(b1); l.addView(b2)
+                  val lp = WindowManager.LayoutParams(
+                      WindowManager.LayoutParams.WRAP_CONTENT, WindowManager.LayoutParams.WRAP_CONTENT,
+                      WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY,
+                      WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE, PixelFormat.TRANSLUCENT
+                  ).apply { gravity = Gravity.TOP or Gravity.START }
+                  wm!!.addView(l, lp)
+                  ov = l
+              }
+
+              fun loop() {
+                  var was = false
+                  var face = 1
+                  val fx = W / 1080f
+                  val fy = H / 2340f
+                  while (run) {
+                      try {
+                          if (!active) { was = false; Thread.sleep(80); continue }
+                          if (!was) { was = true; face = if (faceRight) 1 else -1 }
+                          val img = reader!!.acquireLatestImage()
+                          if (img == null) { Thread.sleep(10); continue }
+                          val pl = img.planes[0]
+                          val buf = pl.buffer
+                          val rs = pl.rowStride
+                          val ps = pl.pixelStride
+                          fun px(x: Int, y: Int, c: Int): Int = buf.get(y * rs + x * ps + c).toInt() and 255
+                          // 현재 발판(화면 중앙 아래 블록)을 기준 모양으로 삼아 비교
+                          fun diff(cx: Int, cy: Int): Float {
+                              var s = 0
+                              var n = 0
+                              var dx = -70
+                              while (dx <= 70) {
+                                  var dy = -30
+                                  while (dy <= 30) {
+                                      val x = ((cx + dx) * fx).toInt()
+                                      val y = ((cy + dy) * fy).toInt()
+                                      if (x in 0 until W && y in 0 until H) {
+                                          val tx = ((540 + dx) * fx).toInt()
+                                          val ty = ((1498 + dy) * fy).toInt()
+                                          for (c in 0..2) s += abs(px(x, y, c) - px(tx, ty, c))
+                                          n++
+                                      }
+                                      dy += 10
+                                  }
+                                  dx += 10
+                              }
+                              return if (n < 30) -1f else s / (n * 3f)
+                          }
+                          val dirs = ArrayList<Int>()
+                          var col = 0
+                          for (k in 1..8) {
+                              val cy = 1498 - 90 * k
+                              val a = diff(540 + 165 * (col - 1), cy)
+                              val b = diff(540 + 165 * (col + 1), cy)
+                              val ma = a >= 0 && a < MATCH
+                              val mb = b >= 0 && b < MATCH
+                              val d = when {
+                                  ma && mb -> if (a <= b) -1 else 1
+                                  ma -> -1
+                                  mb -> 1
+                                  a < 0 && b >= 0 -> -1
+                                  b < 0 && a >= 0 -> 1
+                                  col - 1 == 0 && k <= 5 -> -1
+                                  col + 1 == 0 && k <= 5 -> 1
+                                  else -> 0
+                              }
+                              if (d == 0) break
+                              dirs.add(d)
+                              col += d
+                          }
+                          img.close()
+                          if (dirs.isEmpty()) { Thread.sleep(20); continue }
+                          val ts = TapService.inst
+                          val n = minOf(dirs.size, BATCH)
+                          for (i in 0 until n) {
+                              val d = dirs[i]
+                              if (d == face) {
+                                  ts?.tap(895f * fx, 1950f * fy)
+                              } else {
+                                  ts?.tap(185f * fx, 1950f * fy)
+                                  if (!TURN_CLIMBS) { Thread.sleep(GAP); ts?.tap(895f * fx, 1950f * fy) }
+                              }
+                              face = d
+                              Thread.sleep(GAP)
+                          }
+                          Thread.sleep(SETTLE)
+                      } catch (e: Exception) {
+                          Thread.sleep(50)
+                      }
+                  }
+              }
+
+              override fun onDestroy() {
+                  run = false
+                  try { wm?.removeView(ov) } catch (e: Exception) {}
+                  try { mp?.stop() } catch (e: Exception) {}
+                  super.onDestroy()
+              }
+          }
+          E7
+      - name: build
+        run: gradle assembleDebug --no-daemon
+      - uses: actions/upload-artifact@v4
+        with:
+          name: apk
+          path: app/build/outputs/apk/debug/app-debug.apk
