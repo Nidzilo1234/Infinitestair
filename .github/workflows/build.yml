@@ -1,4 +1,3 @@
-
 name: build
 on:
   workflow_dispatch:
@@ -126,7 +125,6 @@ jobs:
 
           // ===== 조절용 설정값 =====
 
-          // 기존 터치 속도 유지
           const val GAP = 70L
           const val LAT = 150L
           const val LS = 90L
@@ -142,7 +140,7 @@ jobs:
               "35835836936947b9cf9cf9cf47b9cf9cfacfacfacfacf37cacf9cf9cf" +
               "24624624624647bacf7ae7ae47b7ae7af7af7af8ae8ae37cacf8ad8ad" +
               "24624623623646aacf7af7af47b8af7af7af7af7af7af37cacf8ae8ae" +
-              "24624623623646aacf7af7af47b8af7af7af7af7af8af37cacf8ae8ae" +
+              "24624623623646aacf7af7af47b8af7af7af7af8af37cacf8ae8ae" +
               "12312312312323537c37c37c37c37c37c37c37c37c37c37c37c37c37c" +
               "35735735735746aacfacfacfacfacfacf37cacfacfacfacfacf9cf9cf" +
               "24624624624646aacf8af8af8af7af7af37cacf8af8af8af8af7af7af" +
@@ -479,7 +477,7 @@ jobs:
                   ov = l
               }
 
-              // 화면 프레임을 분석하고 연속 일치 여부 확인
+              // 화면 프레임 분석
               fun onFrame(r: ImageReader) {
 
                   val img = try {
@@ -544,54 +542,32 @@ jobs:
                   val t1 = TPL[1]
                   val t2 = TPL[2]
 
-                  // RGB 색상 거리와 공간 분포를 함께 검사
+                  // 기존 RGB 템플릿 비교 방식 유지
+                  // 공간 분포 검사 및 색상 제외 조건 없음
                   fun score(cx: Int, cy: Int): Float {
 
                       var n = 0
-
                       val matches = IntArray(3)
 
-                      val rowHits = Array(3) {
-                          IntArray(9)
-                      }
-
-                      val colHits = Array(3) {
-                          IntArray(7)
-                      }
-
                       var i = 0
-                      var row = 0
-
                       var dy = -32
 
                       while (dy <= 32) {
 
                           var dx = -72
-                          var col = 0
 
                           while (dx <= 72) {
 
-                              val x =
-                                  ((cx + dx) * fx).toInt()
+                              val x = ((cx + dx) * fx).toInt()
+                              val y = ((cy + dy) * fy).toInt()
 
-                              val y =
-                                  ((cy + dy) * fy).toInt()
-
-                              if (
-                                  x in 0 until W &&
-                                  y in 0 until H
-                              ) {
+                              if (x in 0 until W && y in 0 until H) {
 
                                   val o = y * rs + x * ps
 
-                                  val r =
-                                      buf.get(o).toInt() and 255
-
-                                  val g =
-                                      buf.get(o + 1).toInt() and 255
-
-                                  val b =
-                                      buf.get(o + 2).toInt() and 255
+                                  val r = buf.get(o).toInt() and 255
+                                  val g = buf.get(o + 1).toInt() and 255
+                                  val b = buf.get(o + 2).toInt() and 255
 
                                   val q = i * 3
 
@@ -610,94 +586,29 @@ jobs:
                                       abs(g - t2[q + 1]) +
                                       abs(b - t2[q + 2])
 
-                                  // 원래 발판 템플릿과 직접 비교
-                                  // 특정 색상의 픽셀을 임의로 제외하지 않음
-
-                                  if (d0 < 65) {
-                                      matches[0]++
-                                      rowHits[0][row]++
-                                      colHits[0][col / 3]++
-                                  }
-
-                                  if (d1 < 65) {
-                                      matches[1]++
-                                      rowHits[1][row]++
-                                      colHits[1][col / 3]++
-                                  }
-
-                                  if (d2 < 65) {
-                                      matches[2]++
-                                      rowHits[2][row]++
-                                      colHits[2][col / 3]++
-                                  }
+                                  if (d0 < 65) matches[0]++
+                                  if (d1 < 65) matches[1]++
+                                  if (d2 < 65) matches[2]++
 
                                   n++
                               }
 
                               i++
-                              col++
                               dx += 8
                           }
 
-                          row++
                           dy += 8
                       }
 
-                      // 화면 밖 픽셀이 너무 많으면 판단하지 않음
-                      if (n < 150) {
-                          return -1f
-                      }
+                      if (n < 150) return -1f
 
-                      // 가장 많이 일치한 템플릿 선택
-                      var best = 0
-
-                      for (k in 1..2) {
-                          if (matches[k] > matches[best]) {
-                              best = k
-                          }
-                      }
-
-                      val ratio =
-                          matches[best].toFloat() / n
-
-                      // 세로 방향으로 일치하는 행 확인
-                      var goodRows = 0
-
-                      for (v in 0 until 9) {
-                          if (rowHits[best][v] >= 3) {
-                              goodRows++
-                          }
-                      }
-
-                      // 가로 방향으로 일치하는 구간 확인
-                      var goodCols = 0
-
-                      for (v in 0 until 7) {
-                          if (colHits[best][v] >= 2) {
-                              goodCols++
-                          }
-                      }
-
-                      // 일부 색상만 우연히 일치하는 경우 방지
-                      if (
-                          goodRows < 4 ||
-                          goodCols < 4
-                      ) {
-                          return 0f
-                      }
-
-                      val vertical =
-                          goodRows / 9f
-
-                      val horizontal =
-                          goodCols / 7f
-
-                      // 전체 일치율과 공간 분포를 결합
-                      return ratio * (
-                          0.70f +
-                          0.18f * vertical +
-                          0.12f * horizontal
+                      val best = maxOf(
+                          matches[0],
+                          matches[1],
+                          matches[2]
                       )
+
+                      return best.toFloat() / n
                   }
 
                   // 화면 이동에 따른 좌표 보정
@@ -737,14 +648,13 @@ jobs:
                           by += 6
                       }
 
-                      // 믿을 만한 위치를 찾지 못하면 보정하지 않음
                       if (best < MF) {
                           ox = 0
                           oy = 0
                       }
                   }
 
-                  // 현재 바라보는 방향 확인
+                  // 현재 바라보는 방향
                   val sa = score(
                       375 + ox,
                       1588 + oy
@@ -767,8 +677,7 @@ jobs:
 
                   for (k in 1..10) {
 
-                      val cy =
-                          1498 - 90 * k + oy
+                      val cy = 1498 - 90 * k + oy
 
                       val a = score(
                           540 + 165 * (col - 1) + ox,
@@ -783,15 +692,10 @@ jobs:
                       val aa = maxOf(a, 0f)
                       val bb = maxOf(b, 0f)
 
-                      // 확실한 발판이 있는 방향만 선택
-                      // 두 방향 모두 애매하면 추측하지 않음
                       val d = when {
 
-                          aa >= SOFT &&
-                          bb < SOFT -> -1
-
-                          bb >= SOFT &&
-                          aa < SOFT -> 1
+                          aa >= SOFT && bb < SOFT -> -1
+                          bb >= SOFT && aa < SOFT -> 1
 
                           aa >= SOFT &&
                           bb >= SOFT &&
@@ -804,9 +708,7 @@ jobs:
                           else -> 0
                       }
 
-                      if (d == 0) {
-                          break
-                      }
+                      if (d == 0) break
 
                       dirs.add(d)
                       col += d
@@ -860,8 +762,7 @@ jobs:
                               continue
                           }
 
-                          val now =
-                              SystemClock.uptimeMillis()
+                          val now = SystemClock.uptimeMillis()
 
                           if (!was) {
 
@@ -878,9 +779,7 @@ jobs:
                           }
 
                           val f = fr
-
-                          val rest0 =
-                              P.size - issued
+                          val rest0 = P.size - issued
 
                           if (now - lastUi > 300) {
 
@@ -918,17 +817,12 @@ jobs:
 
                               badSince = 0L
 
-                              // 연속 3회 동일하게 인식됐을 때만
-                              // 경로 계획에 반영
-                              if (
-                                  f.stable >= 3 &&
-                                  f.t != usedT
-                              ) {
+                              // 안정도 3회 대기 없이 새 프레임 반영
+                              if (f.t != usedT) {
 
                                   if (rest0 > 0) {
 
-                                      val ap =
-                                          idxAt(f.t - LS)
+                                      val ap = idxAt(f.t - LS)
 
                                       var tail: List<Int>? = null
 
@@ -940,7 +834,6 @@ jobs:
                                       ) {
 
                                           val a = ap + sh
-
                                           val off = issued - a
 
                                           if (
@@ -959,19 +852,19 @@ jobs:
                                               continue
                                           }
 
-                                          val rest =
-                                              f.dirs.subList(
-                                                  off,
-                                                  f.dirs.size
-                                              )
+                                          val rest = f.dirs.subList(
+                                              off,
+                                              f.dirs.size
+                                          )
 
                                           val m = minOf(
                                               rest.size,
                                               rest0
                                           )
 
+                                          // 경로 2개 이상 일치하면 연결
                                           if (
-                                              m >= 3 &&
+                                              m >= 2 &&
                                               rest.subList(0, m) ==
                                               P.subList(
                                                   issued,
@@ -979,14 +872,10 @@ jobs:
                                               )
                                           ) {
 
-                                              val tl =
-                                                  rest.subList(
-                                                      minOf(
-                                                          rest0,
-                                                          rest.size
-                                                      ),
-                                                      rest.size
-                                                  )
+                                              val tl = rest.subList(
+                                                  minOf(rest0, rest.size),
+                                                  rest.size
+                                              )
 
                                               val t0 = tail
 
@@ -1006,32 +895,25 @@ jobs:
                                                       i++
                                                   }
 
-                                                  tail =
-                                                      t0.subList(0, i)
+                                                  tail = t0.subList(0, i)
                                               }
                                           }
                                       }
 
                                       val tt = tail
 
-                                      if (
-                                          tt != null &&
-                                          tt.isNotEmpty()
-                                      ) {
+                                      if (tt != null && tt.isNotEmpty()) {
                                           P.addAll(tt)
                                       }
 
                                       usedT = f.t
 
                                   } else if (
-                                      (
-                                          f.t > lastTap + LAT ||
-                                          now - lastTap > 350
-                                      ) &&
-                                      f.stable >= 3
+                                      now - lastTap > LAT &&
+                                      f.dirs.isNotEmpty()
                                   ) {
 
-                                      // 안정적으로 확인된 경로만 추가
+                                      // 기존 경로가 끝나면 새 경로 즉시 확보
                                       usedT = f.t
 
                                       P.addAll(f.dirs)
@@ -1085,9 +967,7 @@ jobs:
                               face = d
                               issued++
 
-                              lastTap =
-                                  SystemClock.uptimeMillis()
-
+                              lastTap = SystemClock.uptimeMillis()
                               tapT.add(lastTap)
 
                               Thread.sleep(GAP)
