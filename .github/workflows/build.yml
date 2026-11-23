@@ -50,8 +50,8 @@ jobs:
                   applicationId = "bot.stairs"
                   minSdk = 26
                   targetSdk = 34
-                  versionCode = 3
-                  versionName = "3"
+                  versionCode = 4
+                  versionName = "4"
               }
               compileOptions {
                   sourceCompatibility = JavaVersion.VERSION_17
@@ -129,14 +129,9 @@ jobs:
           const val LS = 90L
           const val TURN_CLIMBS = true
 
-          // 기존 인식 기준으로 복구
           const val MF = 0.50f
           const val SOFT = 0.27f
           const val MARGIN = 0.15f
-
-          // 경로 관리
-          const val MAX_QUEUE = 24
-          const val REFILL_AT = 6
 
           // 템플릿
           const val H1 =
@@ -179,16 +174,12 @@ jobs:
               }
           }
 
-          val TPL: Array<IntArray> = arrayOf(
-              dec(H1),
-              dec(H2),
-              dec(H3)
-          )
+          val TPL = arrayOf(dec(H1), dec(H2), dec(H3))
 
           class Fr(
               val ok: Boolean,
               val face: Int,
-              val dirs: List<Int>,
+              val dir: Int,
               val t: Long,
               val stable: Int
           )
@@ -209,19 +200,13 @@ jobs:
               }
 
               override fun onAccessibilityEvent(e: AccessibilityEvent?) {}
-
               override fun onInterrupt() {}
 
               fun tap(x: Float, y: Float) {
-                  val p = Path().apply {
-                      moveTo(x, y)
-                  }
-
+                  val p = Path().apply { moveTo(x, y) }
                   val g = GestureDescription.Builder()
-                      .addStroke(
-                          GestureDescription.StrokeDescription(p, 0, 15)
-                      ).build()
-
+                      .addStroke(GestureDescription.StrokeDescription(p, 0, 15))
+                      .build()
                   dispatchGesture(g, null, null)
               }
           }
@@ -239,9 +224,7 @@ jobs:
                   fun btn(t: String, f: () -> Unit) {
                       l.addView(Button(this).apply {
                           text = t
-                          setOnClickListener {
-                              f()
-                          }
+                          setOnClickListener { f() }
                       })
                   }
 
@@ -259,34 +242,22 @@ jobs:
                   }
 
                   btn("2. 접근성 켜기 (계단봇 선택)") {
-                      startActivity(
-                          Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS)
-                      )
+                      startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS))
                   }
 
                   btn("3. 시작 (화면 캡처 허용)") {
-                      val mpm =
-                          getSystemService(MediaProjectionManager::class.java)
-
-                      startActivityForResult(
-                          mpm.createScreenCaptureIntent(), 1
-                      )
+                      val mpm = getSystemService(MediaProjectionManager::class.java)
+                      startActivityForResult(mpm.createScreenCaptureIntent(), 1)
                   }
 
                   btn("종료") {
-                      stopService(
-                          Intent(this, CaptureService::class.java)
-                      )
+                      stopService(Intent(this, CaptureService::class.java))
                   }
 
                   setContentView(l)
               }
 
-              override fun onActivityResult(
-                  rq: Int,
-                  rc: Int,
-                  d: Intent?
-              ) {
+              override fun onActivityResult(rq: Int, rc: Int, d: Intent?) {
                   super.onActivityResult(rq, rc, d)
 
                   if (rq == 1 && rc == RESULT_OK && d != null) {
@@ -295,7 +266,6 @@ jobs:
                               .putExtra("rc", rc)
                               .putExtra("d", d)
                       )
-
                       moveTaskToBack(true)
                   }
               }
@@ -303,13 +273,11 @@ jobs:
 
           class CaptureService : Service() {
 
-              @Volatile var run = false
+              @Volatile var running = false
               @Volatile var active = false
               @Volatile var firstTurn = false
 
-              @Volatile var fr = Fr(
-                  false, 0, emptyList(), 0L, 0
-              )
+              @Volatile var fr = Fr(false, 0, 0, 0L, 0)
 
               @Volatile var tv: TextView? = null
 
@@ -323,25 +291,15 @@ jobs:
 
               var W = 0
               var H = 0
-              var lastAnalysisTime = 0L
 
               override fun onBind(i: Intent?): IBinder? = null
 
-              override fun onStartCommand(
-                  i: Intent?,
-                  f: Int,
-                  id: Int
-              ): Int {
+              override fun onStartCommand(i: Intent?, f: Int, id: Int): Int {
 
-                  val nm =
-                      getSystemService(NotificationManager::class.java)
+                  val nm = getSystemService(NotificationManager::class.java)
 
                   nm.createNotificationChannel(
-                      NotificationChannel(
-                          "c",
-                          "bot",
-                          NotificationManager.IMPORTANCE_LOW
-                      )
+                      NotificationChannel("c", "bot", NotificationManager.IMPORTANCE_LOW)
                   )
 
                   val n = Notification.Builder(this, "c")
@@ -351,34 +309,27 @@ jobs:
 
                   if (Build.VERSION.SDK_INT >= 29) {
                       startForeground(
-                          1,
-                          n,
+                          1, n,
                           ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PROJECTION
                       )
                   } else {
                       startForeground(1, n)
                   }
 
-                  if (i == null || run) {
-                      return START_NOT_STICKY
-                  }
+                  if (i == null || running) return START_NOT_STICKY
 
                   val rc = i.getIntExtra("rc", 0)
-
-                  val d = i.getParcelableExtra<Intent>("d")
-                      ?: return START_NOT_STICKY
+                  val d = i.getParcelableExtra<Intent>("d") ?: return START_NOT_STICKY
 
                   wm = getSystemService(WINDOW_SERVICE) as WindowManager
 
                   val pt = Point()
                   wm!!.defaultDisplay.getRealSize(pt)
-
                   W = pt.x
                   H = pt.y
 
-                  mp = getSystemService(
-                      MediaProjectionManager::class.java
-                  ).getMediaProjection(rc, d)
+                  mp = getSystemService(MediaProjectionManager::class.java)
+                      .getMediaProjection(rc, d)
 
                   mp!!.registerCallback(
                       object : MediaProjection.Callback() {},
@@ -386,15 +337,10 @@ jobs:
                   )
 
                   reader = ImageReader.newInstance(
-                      W,
-                      H,
-                      PixelFormat.RGBA_8888,
-                      3
+                      W, H, PixelFormat.RGBA_8888, 3
                   )
 
-                  ht = HandlerThread("ir").also {
-                      it.start()
-                  }
+                  ht = HandlerThread("ir").also { it.start() }
 
                   reader!!.setOnImageAvailableListener(
                       { r -> onFrame(r) },
@@ -402,23 +348,17 @@ jobs:
                   )
 
                   mp!!.createVirtualDisplay(
-                      "c",
-                      W,
-                      H,
+                      "c", W, H,
                       resources.displayMetrics.densityDpi,
                       DisplayManager.VIRTUAL_DISPLAY_FLAG_AUTO_MIRROR,
-                      reader!!.surface,
-                      null,
-                      null
+                      reader!!.surface, null, null
                   )
 
                   showOverlay()
 
-                  run = true
+                  running = true
 
-                  Thread {
-                      loop()
-                  }.start()
+                  Thread { loop() }.start()
 
                   return START_NOT_STICKY
               }
@@ -450,14 +390,12 @@ jobs:
 
                   b1.setOnClickListener {
                       active = !active
-                      b1.text =
-                          if (active) "■ 정지" else "▶ 시작"
+                      b1.text = if (active) "■ 정지" else "▶ 시작"
                   }
 
                   b2.setOnClickListener {
                       firstTurn = !firstTurn
-                      b2.text =
-                          if (firstTurn) "첫칸:전환" else "첫칸:오르기"
+                      b2.text = if (firstTurn) "첫칸:전환" else "첫칸:오르기"
                   }
 
                   l.addView(b1)
@@ -480,7 +418,8 @@ jobs:
                   ov = l
               }
 
-              // 화면 프레임 분석
+              // ===== 프레임 분석 =====
+
               fun onFrame(r: ImageReader) {
 
                   val img = try {
@@ -490,16 +429,7 @@ jobs:
                   } ?: return
 
                   try {
-
-                      // 분석 빈도를 약 40FPS로 제한해 부하 감소
-                      val now = SystemClock.uptimeMillis()
-
-                      if (now - lastAnalysisTime < 25L) {
-                          return
-                      }
-
-                      lastAnalysisTime = now
-
+                      val frameTime = SystemClock.uptimeMillis()
                       val pl = img.planes[0]
 
                       val a = analyze(
@@ -508,36 +438,22 @@ jobs:
                           pl.pixelStride
                       )
 
-                      val o = fr
-                      val stamp = SystemClock.uptimeMillis()
+                      val old = fr
 
                       if (a == null) {
-
-                          fr = Fr(
-                              false,
-                              0,
-                              emptyList(),
-                              stamp,
-                              0
-                          )
-
+                          fr = Fr(false, 0, 0, frameTime, 0)
                       } else {
 
-                          // 전체 경로가 아니라 앞의 두 방향을 기준으로
-                          // 프레임 안정도를 계산
                           val same =
-                              o.ok &&
-                              o.face == a.first &&
-                              o.dirs.isNotEmpty() &&
-                              a.second.isNotEmpty() &&
-                              o.dirs.take(2) == a.second.take(2)
+                              old.ok &&
+                              old.dir == a.second
 
                           fr = Fr(
                               true,
                               a.first,
                               a.second,
-                              stamp,
-                              if (same) o.stable + 1 else 1
+                              frameTime,
+                              if (same) old.stable + 1 else 1
                           )
                       }
 
@@ -547,12 +463,13 @@ jobs:
                   }
               }
 
-              // 발판 인식
+              // ===== 발판 인식 =====
+
               fun analyze(
                   buf: ByteBuffer,
                   rs: Int,
                   ps: Int
-              ): Pair<Int, List<Int>>? {
+              ): Pair<Int, Int>? {
 
                   val fx = W / 1080f
                   val fy = H / 2340f
@@ -561,10 +478,13 @@ jobs:
                   val t1 = TPL[1]
                   val t2 = TPL[2]
 
+                  // 기존 샘플링 방식 유지, 임시 배열 생성 제거
                   fun score(cx: Int, cy: Int): Float {
 
                       var n = 0
-                      val matches = IntArray(3)
+                      var m0 = 0
+                      var m1 = 0
+                      var m2 = 0
 
                       var i = 0
                       var dy = -32
@@ -578,9 +498,6 @@ jobs:
                               val x = ((cx + dx) * fx).toInt()
                               val y = ((cy + dy) * fy).toInt()
 
-                              // 템플릿 위치는 화면 밖이어도 증가시킴
-                              val q = i * 3
-
                               if (x in 0 until W && y in 0 until H) {
 
                                   val o = y * rs + x * ps
@@ -589,24 +506,25 @@ jobs:
                                   val g = buf.get(o + 1).toInt() and 255
                                   val b = buf.get(o + 2).toInt() and 255
 
-                                  val d0 =
+                                  val q = i * 3
+
+                                  if (
                                       abs(r - t0[q]) +
                                       abs(g - t0[q + 1]) +
-                                      abs(b - t0[q + 2])
+                                      abs(b - t0[q + 2]) < 60
+                                  ) m0++
 
-                                  val d1 =
+                                  if (
                                       abs(r - t1[q]) +
                                       abs(g - t1[q + 1]) +
-                                      abs(b - t1[q + 2])
+                                      abs(b - t1[q + 2]) < 60
+                                  ) m1++
 
-                                  val d2 =
+                                  if (
                                       abs(r - t2[q]) +
                                       abs(g - t2[q + 1]) +
-                                      abs(b - t2[q + 2])
-
-                                  if (d0 < 65) matches[0]++
-                                  if (d1 < 65) matches[1]++
-                                  if (d2 < 65) matches[2]++
+                                      abs(b - t2[q + 2]) < 60
+                                  ) m2++
 
                                   n++
                               }
@@ -620,13 +538,7 @@ jobs:
 
                       if (n < 150) return -1f
 
-                      val best = maxOf(
-                          matches[0],
-                          matches[1],
-                          matches[2]
-                      )
-
-                      return best.toFloat() / n
+                      return maxOf(m0, m1, m2).toFloat() / n
                   }
 
                   // 위치 보정
@@ -644,9 +556,8 @@ jobs:
                       var bestX = 0
                       var bestY = 0
 
-                      // 넓은 범위를 성긴 간격으로 탐색
+                      // 넓은 범위는 성긴 간격으로 검색
                       for (by in -24..24 step 12) {
-
                           for (bx in -36..36 step 12) {
 
                               val v = maxOf(
@@ -662,16 +573,15 @@ jobs:
                           }
                       }
 
-                      // 가장 좋은 위치 주변만 세밀하게 재검사
+                      // 유효한 위치를 찾았을 때만 세밀하게 보정
                       if (best >= MF) {
 
                           var fineBest = best
                           var fineX = bestX
                           var fineY = bestY
 
-                          for (by in (bestY - 6)..(bestY + 6) step 6) {
-
-                              for (bx in (bestX - 6)..(bestX + 6) step 6) {
+                          for (by in bestY - 6..bestY + 6 step 6) {
+                              for (bx in bestX - 6..bestX + 6 step 6) {
 
                                   val v = maxOf(
                                       score(375 + bx, 1408 + by),
@@ -691,410 +601,115 @@ jobs:
                       }
                   }
 
-                  // 현재 방향
-                  val sa = score(
-                      375 + ox,
-                      1588 + oy
-                  )
-
-                  val sb = score(
-                      705 + ox,
-                      1588 + oy
-                  )
+                  // 현재 바라보는 방향
+                  val sa = score(375 + ox, 1588 + oy)
+                  val sb = score(705 + ox, 1588 + oy)
 
                   val face = when {
-                      sa >= MF && sb < SOFT -> 1
-                      sb >= MF && sa < SOFT -> -1
+                      sa >= MF && sb < MF -> 1
+                      sb >= MF && sa < MF -> -1
                       else -> 0
                   }
 
-                  // 다음 계단 방향을 최대 10개까지 탐색
-                  val dirs = ArrayList<Int>()
+                  // 다음 계단 딱 하나만 확인
+                  val a = score(375 + ox, 1408 + oy)
+                  val b = score(705 + ox, 1408 + oy)
 
-                  var col = 0
+                  val aa = maxOf(a, 0f)
+                  val bb = maxOf(b, 0f)
 
-                  for (k in 1..10) {
+                  val dir = when {
 
-                      val cy = 1498 - 90 * k + oy
+                      aa >= SOFT && bb < SOFT -> -1
+                      bb >= SOFT && aa < SOFT -> 1
 
-                      val a = score(
-                          540 + 165 * (col - 1) + ox,
-                          cy
-                      )
+                      aa >= SOFT &&
+                      bb >= SOFT &&
+                      aa - bb >= MARGIN -> -1
 
-                      val b = score(
-                          540 + 165 * (col + 1) + ox,
-                          cy
-                      )
+                      bb >= SOFT &&
+                      aa >= SOFT &&
+                      bb - aa >= MARGIN -> 1
 
-                      val aa = maxOf(a, 0f)
-                      val bb = maxOf(b, 0f)
-
-                      val d = when {
-
-                          aa >= SOFT && bb < SOFT -> -1
-                          bb >= SOFT && aa < SOFT -> 1
-
-                          aa >= SOFT &&
-                          bb >= SOFT &&
-                          aa - bb >= MARGIN -> -1
-
-                          bb >= SOFT &&
-                          aa >= SOFT &&
-                          bb - aa >= MARGIN -> 1
-
-                          else -> 0
-                      }
-
-                      if (d == 0) break
-
-                      dirs.add(d)
-                      col += d
+                      else -> 0
                   }
 
-                  return if (dirs.isEmpty()) {
-                      null
-                  } else {
-                      Pair(face, dirs)
-                  }
+                  return if (dir == 0) null else Pair(face, dir)
               }
 
-              // 경로 연결 및 터치 실행
+              // ===== 한 칸씩 인식하고 즉시 터치 =====
+
               fun loop() {
 
                   val fx = W / 1080f
                   val fy = H / 2340f
 
-                  // P: 앞으로 실행할 경로
-                  // issued: 이미 실행한 경로의 개수
-                  val P = ArrayList<Int>()
-                  val tapT = ArrayList<Long>()
-
-                  var issued = 0
                   var face = 0
-                  var usedT = 0L
+                  var usedFrame = 0L
                   var lastTap = 0L
-                  var badSince = 0L
                   var lastUi = 0L
-                  var was = false
+                  var wasActive = false
 
-                  // 새 경로 후보를 여러 프레임에서 비교
-                  var candidateTail: List<Int>? = null
-                  var candidateHits = 0
-                  var candidateAt = 0L
-
-                  fun idxAt(t: Long): Int {
-
-                      var c = issued
-
-                      while (
-                          c > 0 &&
-                          tapT[c - 1] > t
-                      ) {
-                          c--
-                      }
-
-                      return c
-                  }
-
-                  // 두 경로가 처음으로 달라지는 지점 전까지 반환
-                  fun commonPrefix(
-                      a: List<Int>,
-                      b: List<Int>
-                  ): List<Int> {
-
-                      val out = ArrayList<Int>()
-                      val n = minOf(a.size, b.size)
-
-                      for (i in 0 until n) {
-                          if (a[i] != b[i]) break
-                          out.add(a[i])
-                      }
-
-                      return out
-                  }
-
-                  // 경로 버퍼가 넘치지 않도록 추가
-                  fun addSteps(steps: List<Int>) {
-
-                      val remaining = P.size - issued
-                      val room = MAX_QUEUE - remaining
-
-                      val count = minOf(
-                          room.coerceAtLeast(0),
-                          steps.size
-                      )
-
-                      for (i in 0 until count) {
-                          P.add(steps[i])
-                      }
-                  }
-
-                  while (run) {
+                  while (running) {
 
                       try {
 
                           if (!active) {
-                              was = false
-                              Thread.sleep(80)
+                              wasActive = false
+                              Thread.sleep(30)
                               continue
                           }
 
                           val now = SystemClock.uptimeMillis()
 
-                          if (!was) {
-
-                              was = true
-
-                              P.clear()
-                              tapT.clear()
-
-                              issued = 0
+                          if (!wasActive) {
+                              wasActive = true
                               face = 0
-                              usedT = 0L
+                              usedFrame = 0L
                               lastTap = 0L
-                              badSince = 0L
-
-                              candidateTail = null
-                              candidateHits = 0
-                              candidateAt = 0L
                           }
 
                           val f = fr
-                          val rest0 = P.size - issued
 
-                          // 상태 표시
-                          if (now - lastUi > 300) {
+                          if (now - lastUi > 250L) {
 
                               lastUi = now
 
-                              val st =
-                                  (if (f.ok) "인식O" else "인식X") +
-                                  " 안정도" + f.stable +
-                                  " 경로" + rest0
+                              val status =
+                                  if (!f.ok) "인식 대기"
+                                  else "인식 중 안정도 ${f.stable}"
 
                               ui.post {
-                                  tv?.text = st
+                                  tv?.text = status
                               }
                           }
 
-                          if (!f.ok) {
-
-                              if (badSince == 0L) {
-                                  badSince = now
-                              }
-
-                              // 경로가 없고 장시간 인식 실패한 경우만 초기화
-                              if (
-                                  rest0 == 0 &&
-                                  now - badSince > 1000
-                              ) {
-
-                                  P.clear()
-                                  tapT.clear()
-
-                                  issued = 0
-                                  face = 0
-
-                                  candidateTail = null
-                                  candidateHits = 0
-                              }
-
-                          } else {
-
-                              badSince = 0L
-
-                              if (f.t != usedT) {
-
-                                  if (rest0 == 0) {
-
-                                      // 새 경로 시작
-                                      // 앞의 두 방향이 연속 프레임에서
-                                      // 확인된 경우에만 경로 확보
-                                      if (
-                                          f.stable >= 2 &&
-                                          f.dirs.isNotEmpty() &&
-                                          f.t >= lastTap + 15L
-                                      ) {
-
-                                          addSteps(f.dirs)
-
-                                          if (f.face != 0) {
-                                              face = f.face
-                                          }
-
-                                          candidateTail = null
-                                          candidateHits = 0
-                                          candidateAt = 0L
-                                      }
-
-                                  } else if (rest0 <= REFILL_AT) {
-
-                                      // 남은 경로가 6개 이하일 때
-                                      // 다음 경로를 미리 연결
-                                      val ap = idxAt(f.t - LS)
-
-                                      var rawTail: List<Int>? = null
-
-                                      for (
-                                          sh in intArrayOf(
-                                              0, -1, 1,
-                                              -2, 2, -3, 3
-                                          )
-                                      ) {
-
-                                          val a = ap + sh
-                                          val off = issued - a
-
-                                          if (
-                                              a < 0 ||
-                                              a > issued ||
-                                              off < 0 ||
-                                              off >= f.dirs.size
-                                          ) {
-                                              continue
-                                          }
-
-                                          // 현재 남은 경로 전체와
-                                          // 새 화면의 경로가 일치해야 함
-                                          val available =
-                                              f.dirs.size - off
-
-                                          if (available < rest0) {
-                                              continue
-                                          }
-
-                                          val current =
-                                              P.subList(
-                                                  issued,
-                                                  P.size
-                                              )
-
-                                          val observed =
-                                              f.dirs.subList(
-                                                  off,
-                                                  off + rest0
-                                              )
-
-                                          if (current != observed) {
-                                              continue
-                                          }
-
-                                          val tl =
-                                              f.dirs.subList(
-                                                  off + rest0,
-                                                  f.dirs.size
-                                              ).toList()
-
-                                          if (tl.isEmpty()) {
-                                              continue
-                                          }
-
-                                          rawTail =
-                                              if (rawTail == null) {
-                                                  tl
-                                              } else {
-                                                  commonPrefix(rawTail, tl)
-                                              }
-                                      }
-
-                                      // 새 경로가 연속 프레임에서
-                                      // 일치할 때만 실제 버퍼에 추가
-                                      if (
-                                          rawTail != null &&
-                                          rawTail.isNotEmpty()
-                                      ) {
-
-                                          val previous = candidateTail
-
-                                          if (
-                                              previous == null ||
-                                              now - candidateAt > 100L
-                                          ) {
-
-                                              candidateTail = rawTail
-                                              candidateHits = 1
-
-                                          } else {
-
-                                              val common =
-                                                  commonPrefix(
-                                                      previous,
-                                                      rawTail
-                                                  )
-
-                                              if (common.isNotEmpty()) {
-
-                                                  candidateTail = common
-                                                  candidateHits++
-
-                                              } else {
-
-                                                  candidateTail = rawTail
-                                                  candidateHits = 1
-                                              }
-                                          }
-
-                                          candidateAt = now
-
-                                          if (candidateHits >= 2) {
-
-                                              val confirmed =
-                                                  candidateTail
-
-                                              if (
-                                                  confirmed != null &&
-                                                  confirmed.isNotEmpty()
-                                              ) {
-                                                  addSteps(confirmed)
-                                              }
-
-                                              candidateTail = null
-                                              candidateHits = 0
-                                              candidateAt = 0L
-                                          }
-
-                                      } else if (
-                                          candidateAt != 0L &&
-                                          now - candidateAt > 100L
-                                      ) {
-
-                                          candidateTail = null
-                                          candidateHits = 0
-                                          candidateAt = 0L
-                                      }
-
-                                  } else {
-
-                                      // 경로가 충분히 남아 있으면
-                                      // 새 경로 후보를 초기화
-                                      candidateTail = null
-                                      candidateHits = 0
-                                      candidateAt = 0L
-                                  }
-
-                                  usedT = f.t
-                              }
-                          }
-
-                          // 터치 실행
-                          if (issued < P.size) {
+                          // 새 프레임인지 확인
+                          if (
+                              f.ok &&
+                              f.t != usedFrame &&
+                              f.stable >= 2 &&
+                              now - lastTap >= LS &&
+                              f.t >= lastTap + LS
+                          ) {
 
                               val ts = TapService.inst
 
                               if (ts == null) {
-                                  Thread.sleep(20)
+                                  Thread.sleep(5)
                                   continue
                               }
 
-                              val d = P[issued]
+                              val d = f.dir
+
+                              // 최초 방향은 화면 인식 또는 첫칸 설정 사용
+                              if (face == 0 && f.face != 0) {
+                                  face = f.face
+                              }
 
                               val turn =
-                                  if (face == 0) {
-                                      firstTurn
-                                  } else {
-                                      d != face
-                                  }
+                                  if (face == 0) firstTurn
+                                  else d != face
 
                               if (turn) {
 
@@ -1104,9 +719,7 @@ jobs:
                                   )
 
                                   if (!TURN_CLIMBS) {
-
                                       Thread.sleep(GAP)
-
                                       ts.tap(
                                           895f * fx,
                                           1950f * fy
@@ -1121,42 +734,27 @@ jobs:
                                   )
                               }
 
+                              // 이번 프레임은 다시 사용하지 않음
+                              usedFrame = f.t
+
+                              // 다음 계단의 방향을 새로 인식하도록 갱신
                               face = d
-                              issued++
-
                               lastTap = SystemClock.uptimeMillis()
-                              tapT.add(lastTap)
-
-                              // 오래된 실행 기록을 정리
-                              if (issued >= 120) {
-
-                                  P.subList(0, issued).clear()
-                                  tapT.subList(0, issued).clear()
-
-                                  issued = 0
-
-                                  candidateTail = null
-                                  candidateHits = 0
-                                  candidateAt = 0L
-                              }
-
-                              Thread.sleep(GAP)
 
                           } else {
 
-                              Thread.sleep(3)
+                              Thread.sleep(2)
                           }
 
                       } catch (e: Exception) {
-
-                          Thread.sleep(20)
+                          Thread.sleep(10)
                       }
                   }
               }
 
               override fun onDestroy() {
 
-                  run = false
+                  running = false
 
                   try {
                       wm?.removeView(ov)
