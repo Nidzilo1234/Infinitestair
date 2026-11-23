@@ -3,15 +3,18 @@ name: build
 on:
   workflow_dispatch:
   push:
+
 jobs:
   b:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+
       - uses: actions/setup-java@v4
         with:
           distribution: temurin
           java-version: 17
+
       - uses: gradle/actions/setup-gradle@v4
         with:
           gradle-version: 8.9
@@ -48,8 +51,8 @@ jobs:
                   applicationId = "bot.stairs"
                   minSdk = 26
                   targetSdk = 34
-                  versionCode = 1
-                  versionName = "1"
+                  versionCode = 2
+                  versionName = "2"
               }
               compileOptions {
                   sourceCompatibility = JavaVersion.VERSION_17
@@ -122,6 +125,8 @@ jobs:
           import kotlin.math.abs
 
           // ===== 조절용 설정값 =====
+
+          // 기존 터치 속도 유지
           const val GAP = 70L
           const val LAT = 150L
           const val LS = 90L
@@ -129,9 +134,8 @@ jobs:
 
           // 발판 인식 기준
           const val MF = 0.48f
-          const val SOFT = 0.30f
-          const val MARGIN = 0.14f
-          const val CLEAR = 0.20f
+          const val SOFT = 0.36f
+          const val MARGIN = 0.12f
 
           // 발판 모양 기준 데이터
           const val H1 =
@@ -146,8 +150,8 @@ jobs:
               "12412412412524647b37c37c37c37c37c37c37b37c37c37c37c37c37c"
 
           const val H2 =
-              "e93e93ec4ff5ff5ff5ff5ff5ff5ff5ff5ff5ff5ff5ff5ff5ff5ff5ff5" +
-              "b62b62e93ec4ed4fd4fd4fd4fd4fd4fd4ed4ed4ed4ed4ed4ed4ed4ed4" +
+              "e93e93ec4ff5ff5ff5ff5ff5ff5ff5ff5ff5ff5ff5ff5ff5ff5ff5" +
+              "b62b62e93ec4ed4fd4fd4fd4fd4fd4fd4ed4ed4ed4ed4ed4ed4ed4" +
               "b62b62e93ec4b62b62b62fd5b62b62fd5b62ed4ed4ed4b62b62ed4ed4" +
               "b62b62e93ed4e93e93da3fd5e93e93fd4e93ed4ed4ed4e93e93c62ed4" +
               "b62b62e93ed4e93ed4ed4fd5eb3da2fd4e93ed4ed4ed4e93ed4e93ed4" +
@@ -167,10 +171,19 @@ jobs:
               "934934d47e69e69d47d47d47d47d47d47e69d47e79e7be7bd47f9be9b" +
               "934934d47e6ae6ae69e69e69f7af7bf7be79f69e79e79e7bf7bf9bf9b"
 
-          fun dec(h: String): IntArray =
-              IntArray(513) { h[it].digitToInt(16) * 16 + 8 }
+          // 템플릿 데이터
+          fun dec(h: String): IntArray {
+              return IntArray(513) {
+                  val c = h.getOrNull(it) ?: '8'
+                  c.digitToInt(16) * 16 + 8
+              }
+          }
 
-          val TPL: Array<IntArray> = arrayOf(dec(H1), dec(H2), dec(H3))
+          val TPL: Array<IntArray> = arrayOf(
+              dec(H1),
+              dec(H2),
+              dec(H3)
+          )
 
           class Fr(
               val ok: Boolean,
@@ -181,6 +194,7 @@ jobs:
           )
 
           class TapService : AccessibilityService() {
+
               companion object {
                   @Volatile var inst: TapService? = null
               }
@@ -195,19 +209,25 @@ jobs:
               }
 
               override fun onAccessibilityEvent(e: AccessibilityEvent?) {}
+
               override fun onInterrupt() {}
 
               fun tap(x: Float, y: Float) {
-                  val p = Path().apply { moveTo(x, y) }
+                  val p = Path().apply {
+                      moveTo(x, y)
+                  }
+
                   val g = GestureDescription.Builder()
                       .addStroke(
                           GestureDescription.StrokeDescription(p, 0, 15)
                       ).build()
+
                   dispatchGesture(g, null, null)
               }
           }
 
           class MainActivity : Activity() {
+
               override fun onCreate(b: Bundle?) {
                   super.onCreate(b)
 
@@ -219,7 +239,9 @@ jobs:
                   fun btn(t: String, f: () -> Unit) {
                       l.addView(Button(this).apply {
                           text = t
-                          setOnClickListener { f() }
+                          setOnClickListener {
+                              f()
+                          }
                       })
                   }
 
@@ -245,13 +267,16 @@ jobs:
                   btn("3. 시작 (화면 캡처 허용)") {
                       val mpm =
                           getSystemService(MediaProjectionManager::class.java)
+
                       startActivityForResult(
                           mpm.createScreenCaptureIntent(), 1
                       )
                   }
 
                   btn("종료") {
-                      stopService(Intent(this, CaptureService::class.java))
+                      stopService(
+                          Intent(this, CaptureService::class.java)
+                      )
                   }
 
                   setContentView(l)
@@ -270,16 +295,21 @@ jobs:
                               .putExtra("rc", rc)
                               .putExtra("d", d)
                       )
+
                       moveTaskToBack(true)
                   }
               }
           }
 
           class CaptureService : Service() {
+
               @Volatile var run = false
               @Volatile var active = false
               @Volatile var firstTurn = false
-              @Volatile var fr = Fr(false, 0, emptyList(), 0L, 0)
+
+              @Volatile var fr = Fr(
+                  false, 0, emptyList(), 0L, 0
+              )
 
               @Volatile var tv: TextView? = null
 
@@ -301,7 +331,9 @@ jobs:
                   f: Int,
                   id: Int
               ): Int {
-                  val nm = getSystemService(NotificationManager::class.java)
+
+                  val nm =
+                      getSystemService(NotificationManager::class.java)
 
                   nm.createNotificationChannel(
                       NotificationChannel(
@@ -326,9 +358,12 @@ jobs:
                       startForeground(1, n)
                   }
 
-                  if (i == null || run) return START_NOT_STICKY
+                  if (i == null || run) {
+                      return START_NOT_STICKY
+                  }
 
                   val rc = i.getIntExtra("rc", 0)
+
                   val d = i.getParcelableExtra<Intent>("d")
                       ?: return START_NOT_STICKY
 
@@ -356,7 +391,9 @@ jobs:
                       3
                   )
 
-                  ht = HandlerThread("ir").also { it.start() }
+                  ht = HandlerThread("ir").also {
+                      it.start()
+                  }
 
                   reader!!.setOnImageAvailableListener(
                       { r -> onFrame(r) },
@@ -378,12 +415,15 @@ jobs:
 
                   run = true
 
-                  Thread { loop() }.start()
+                  Thread {
+                      loop()
+                  }.start()
 
                   return START_NOT_STICKY
               }
 
               fun showOverlay() {
+
                   val l = LinearLayout(this).apply {
                       orientation = LinearLayout.HORIZONTAL
                       alpha = 0.5f
@@ -409,12 +449,14 @@ jobs:
 
                   b1.setOnClickListener {
                       active = !active
-                      b1.text = if (active) "■ 정지" else "▶ 시작"
+                      b1.text =
+                          if (active) "■ 정지" else "▶ 시작"
                   }
 
                   b2.setOnClickListener {
                       firstTurn = !firstTurn
-                      b2.text = if (firstTurn) "첫칸:전환" else "첫칸:오르기"
+                      b2.text =
+                          if (firstTurn) "첫칸:전환" else "첫칸:오르기"
                   }
 
                   l.addView(b1)
@@ -437,8 +479,9 @@ jobs:
                   ov = l
               }
 
-              // 새 프레임이 올 때마다 화면 분석
+              // 화면 프레임을 분석하고 연속 일치 여부 확인
               fun onFrame(r: ImageReader) {
+
                   val img = try {
                       r.acquireLatestImage()
                   } catch (e: Exception) {
@@ -457,21 +500,30 @@ jobs:
                       val o = fr
                       val now = SystemClock.uptimeMillis()
 
-                      fr = if (a == null) {
-                          Fr(false, 0, emptyList(), now, 0)
+                      if (a == null) {
+                          fr = Fr(
+                              false,
+                              0,
+                              emptyList(),
+                              now,
+                              0
+                          )
                       } else {
-                          Fr(
+
+                          val same =
+                              o.ok &&
+                              o.face == a.first &&
+                              o.dirs == a.second
+
+                          fr = Fr(
                               true,
                               a.first,
                               a.second,
                               now,
-                              if (
-                                  o.ok &&
-                                  o.face == a.first &&
-                                  o.dirs == a.second
-                              ) o.stable + 1 else 0
+                              if (same) o.stable + 1 else 1
                           )
                       }
+
                   } catch (e: Exception) {
                   } finally {
                       img.close()
@@ -484,6 +536,7 @@ jobs:
                   rs: Int,
                   ps: Int
               ): Pair<Int, List<Int>>? {
+
                   val fx = W / 1080f
                   val fy = H / 2340f
 
@@ -491,138 +544,163 @@ jobs:
                   val t1 = TPL[1]
                   val t2 = TPL[2]
 
-                  // RGB 색상 특징
-                  fun isRed(r: Int, g: Int, b: Int): Boolean {
-                      return r > 65 &&
-                          r > g * 1.25f &&
-                          r > b * 1.20f
-                  }
-
-                  fun isYellow(r: Int, g: Int, b: Int): Boolean {
-                      return r > 140 &&
-                          g > 105 &&
-                          b < 130 &&
-                          r > b * 1.20f
-                  }
-
-                  fun isSkin(r: Int, g: Int, b: Int): Boolean {
-                      return r > 120 &&
-                          g > 70 &&
-                          b > 40 &&
-                          r > g * 1.15f &&
-                          g > b * 1.10f
-                  }
-
-                  // 템플릿 자체에 해당 색상이 존재하는지 확인
-                  fun expectedColor(
-                      t: IntArray,
-                      q: Int,
-                      type: Int
-                  ): Boolean {
-                      val r = t[q]
-                      val g = t[q + 1]
-                      val b = t[q + 2]
-
-                      return when (type) {
-                          0 -> isRed(r, g, b)
-                          1 -> isYellow(r, g, b)
-                          else -> isSkin(r, g, b)
-                      }
-                  }
-
-                  // 발판 일치 점수
+                  // RGB 색상 거리와 공간 분포를 함께 검사
                   fun score(cx: Int, cy: Int): Float {
+
                       var n = 0
-                      var m0 = 0
-                      var m1 = 0
-                      var m2 = 0
+
+                      val matches = IntArray(3)
+
+                      val rowHits = Array(3) {
+                          IntArray(9)
+                      }
+
+                      val colHits = Array(3) {
+                          IntArray(7)
+                      }
 
                       var i = 0
+                      var row = 0
+
                       var dy = -32
 
                       while (dy <= 32) {
+
                           var dx = -72
+                          var col = 0
 
                           while (dx <= 72) {
-                              val x = ((cx + dx) * fx).toInt()
-                              val y = ((cy + dy) * fy).toInt()
 
-                              if (x in 0 until W && y in 0 until H) {
+                              val x =
+                                  ((cx + dx) * fx).toInt()
+
+                              val y =
+                                  ((cy + dy) * fy).toInt()
+
+                              if (
+                                  x in 0 until W &&
+                                  y in 0 until H
+                              ) {
+
                                   val o = y * rs + x * ps
 
-                                  val r = buf.get(o).toInt() and 255
-                                  val g = buf.get(o + 1).toInt() and 255
-                                  val b = buf.get(o + 2).toInt() and 255
+                                  val r =
+                                      buf.get(o).toInt() and 255
+
+                                  val g =
+                                      buf.get(o + 1).toInt() and 255
+
+                                  val b =
+                                      buf.get(o + 2).toInt() and 255
 
                                   val q = i * 3
 
-                                  // 세 템플릿 중 하나라도 해당 색상을
-                                  // 정상적으로 가지고 있으면 제외하지 않음
-                                  val redOverlay =
-                                      isRed(r, g, b) &&
-                                      !expectedColor(t0, q, 0) &&
-                                      !expectedColor(t1, q, 0) &&
-                                      !expectedColor(t2, q, 0)
+                                  val d0 =
+                                      abs(r - t0[q]) +
+                                      abs(g - t0[q + 1]) +
+                                      abs(b - t0[q + 2])
 
-                                  val yellowOverlay =
-                                      isYellow(r, g, b) &&
-                                      !expectedColor(t0, q, 1) &&
-                                      !expectedColor(t1, q, 1) &&
-                                      !expectedColor(t2, q, 1)
+                                  val d1 =
+                                      abs(r - t1[q]) +
+                                      abs(g - t1[q + 1]) +
+                                      abs(b - t1[q + 2])
 
-                                  val skinOverlay =
-                                      isSkin(r, g, b) &&
-                                      !expectedColor(t0, q, 2) &&
-                                      !expectedColor(t1, q, 2) &&
-                                      !expectedColor(t2, q, 2)
+                                  val d2 =
+                                      abs(r - t2[q]) +
+                                      abs(g - t2[q + 1]) +
+                                      abs(b - t2[q + 2])
 
-                                  // 캐릭터, 코인, 사망 표시 등으로
-                                  // 가려진 것으로 추정되는 픽셀 제외
-                                  if (
-                                      !redOverlay &&
-                                      !yellowOverlay &&
-                                      !skinOverlay
-                                  ) {
-                                      val d0 =
-                                          abs(r - t0[q]) +
-                                          abs(g - t0[q + 1]) +
-                                          abs(b - t0[q + 2])
+                                  // 원래 발판 템플릿과 직접 비교
+                                  // 특정 색상의 픽셀을 임의로 제외하지 않음
 
-                                      val d1 =
-                                          abs(r - t1[q]) +
-                                          abs(g - t1[q + 1]) +
-                                          abs(b - t1[q + 2])
-
-                                      val d2 =
-                                          abs(r - t2[q]) +
-                                          abs(g - t2[q + 1]) +
-                                          abs(b - t2[q + 2])
-
-                                      if (d0 < 85) m0++
-                                      if (d1 < 85) m1++
-                                      if (d2 < 85) m2++
-
-                                      n++
+                                  if (d0 < 65) {
+                                      matches[0]++
+                                      rowHits[0][row]++
+                                      colHits[0][col / 3]++
                                   }
+
+                                  if (d1 < 65) {
+                                      matches[1]++
+                                      rowHits[1][row]++
+                                      colHits[1][col / 3]++
+                                  }
+
+                                  if (d2 < 65) {
+                                      matches[2]++
+                                      rowHits[2][row]++
+                                      colHits[2][col / 3]++
+                                  }
+
+                                  n++
                               }
 
                               i++
+                              col++
                               dx += 8
                           }
 
+                          row++
                           dy += 8
                       }
 
-                      // 비교할 픽셀이 너무 적으면 판단 보류
-                      if (n < 35) return -1f
+                      // 화면 밖 픽셀이 너무 많으면 판단하지 않음
+                      if (n < 150) {
+                          return -1f
+                      }
 
-                      return maxOf(
-                          m0,
-                          maxOf(m1, m2)
-                      ).toFloat() / n
+                      // 가장 많이 일치한 템플릿 선택
+                      var best = 0
+
+                      for (k in 1..2) {
+                          if (matches[k] > matches[best]) {
+                              best = k
+                          }
+                      }
+
+                      val ratio =
+                          matches[best].toFloat() / n
+
+                      // 세로 방향으로 일치하는 행 확인
+                      var goodRows = 0
+
+                      for (v in 0 until 9) {
+                          if (rowHits[best][v] >= 3) {
+                              goodRows++
+                          }
+                      }
+
+                      // 가로 방향으로 일치하는 구간 확인
+                      var goodCols = 0
+
+                      for (v in 0 until 7) {
+                          if (colHits[best][v] >= 2) {
+                              goodCols++
+                          }
+                      }
+
+                      // 일부 색상만 우연히 일치하는 경우 방지
+                      if (
+                          goodRows < 4 ||
+                          goodCols < 4
+                      ) {
+                          return 0f
+                      }
+
+                      val vertical =
+                          goodRows / 9f
+
+                      val horizontal =
+                          goodCols / 7f
+
+                      // 전체 일치율과 공간 분포를 결합
+                      return ratio * (
+                          0.70f +
+                          0.18f * vertical +
+                          0.12f * horizontal
+                      )
                   }
 
-                  // 화면 움직임에 따른 위치 오차 보정
+                  // 화면 이동에 따른 좌표 보정
                   var ox = 0
                   var oy = 0
 
@@ -632,13 +710,16 @@ jobs:
                   )
 
                   if (s1 < MF) {
+
                       var best = s1
                       var by = -24
 
                       while (by <= 24) {
+
                           var bx = -36
 
                           while (bx <= 36) {
+
                               val v = maxOf(
                                   score(375 + bx, 1408 + by),
                                   score(705 + bx, 1408 + by)
@@ -656,27 +737,38 @@ jobs:
                           by += 6
                       }
 
-                      if (best < 0.6f) {
+                      // 믿을 만한 위치를 찾지 못하면 보정하지 않음
+                      if (best < MF) {
                           ox = 0
                           oy = 0
                       }
                   }
 
                   // 현재 바라보는 방향 확인
-                  val sa = score(375 + ox, 1588 + oy)
-                  val sb = score(705 + ox, 1588 + oy)
+                  val sa = score(
+                      375 + ox,
+                      1588 + oy
+                  )
+
+                  val sb = score(
+                      705 + ox,
+                      1588 + oy
+                  )
 
                   val face = when {
-                      sa >= MF && sb < MF -> 1
-                      sb >= MF && sa < MF -> -1
+                      sa >= MF && sb < SOFT -> 1
+                      sb >= MF && sa < SOFT -> -1
                       else -> 0
                   }
 
                   val dirs = ArrayList<Int>()
+
                   var col = 0
 
                   for (k in 1..10) {
-                      val cy = 1498 - 90 * k + oy
+
+                      val cy =
+                          1498 - 90 * k + oy
 
                       val a = score(
                           540 + 165 * (col - 1) + ox,
@@ -691,35 +783,30 @@ jobs:
                       val aa = maxOf(a, 0f)
                       val bb = maxOf(b, 0f)
 
+                      // 확실한 발판이 있는 방향만 선택
+                      // 두 방향 모두 애매하면 추측하지 않음
                       val d = when {
+
                           aa >= SOFT &&
-                              aa - bb >= MARGIN -> -1
+                          bb < SOFT -> -1
 
                           bb >= SOFT &&
-                              bb - aa >= MARGIN -> 1
+                          aa < SOFT -> 1
 
-                          a < 0f &&
-                              b >= 0f &&
-                              b <= CLEAR -> -1
+                          aa >= SOFT &&
+                          bb >= SOFT &&
+                          aa - bb >= MARGIN -> -1
 
-                          b < 0f &&
-                              a >= 0f &&
-                              a <= CLEAR -> 1
-
-                          k <= 6 &&
-                              col - 1 == 0 &&
-                              b >= 0f &&
-                              b <= CLEAR -> -1
-
-                          k <= 6 &&
-                              col + 1 == 0 &&
-                              a >= 0f &&
-                              a <= CLEAR -> 1
+                          bb >= SOFT &&
+                          aa >= SOFT &&
+                          bb - aa >= MARGIN -> 1
 
                           else -> 0
                       }
 
-                      if (d == 0) break
+                      if (d == 0) {
+                          break
+                      }
 
                       dirs.add(d)
                       col += d
@@ -732,8 +819,9 @@ jobs:
                   }
               }
 
-              // 계획을 세우고 연속 터치
+              // 이동 계획 및 터치 실행
               fun loop() {
+
                   val fx = W / 1080f
                   val fy = H / 2340f
 
@@ -749,9 +837,13 @@ jobs:
                   var was = false
 
                   fun idxAt(t: Long): Int {
+
                       var c = issued
 
-                      while (c > 0 && tapT[c - 1] > t) {
+                      while (
+                          c > 0 &&
+                          tapT[c - 1] > t
+                      ) {
                           c--
                       }
 
@@ -759,16 +851,20 @@ jobs:
                   }
 
                   while (run) {
+
                       try {
+
                           if (!active) {
                               was = false
                               Thread.sleep(80)
                               continue
                           }
 
-                          val now = SystemClock.uptimeMillis()
+                          val now =
+                              SystemClock.uptimeMillis()
 
                           if (!was) {
+
                               was = true
 
                               P.clear()
@@ -782,13 +878,17 @@ jobs:
                           }
 
                           val f = fr
-                          val rest0 = P.size - issued
+
+                          val rest0 =
+                              P.size - issued
 
                           if (now - lastUi > 300) {
+
                               lastUi = now
 
                               val st =
                                   (if (f.ok) "인식O" else "인식X") +
+                                  " 안정도" + f.stable +
                                   " 남은" + rest0
 
                               ui.post {
@@ -797,6 +897,7 @@ jobs:
                           }
 
                           if (!f.ok) {
+
                               if (badSince == 0L) {
                                   badSince = now
                               }
@@ -805,40 +906,58 @@ jobs:
                                   rest0 == 0 &&
                                   now - badSince > 800
                               ) {
+
                                   P.clear()
                                   tapT.clear()
+
                                   issued = 0
                                   face = 0
                               }
+
                           } else {
+
                               badSince = 0L
 
-                              if (f.t != usedT) {
+                              // 연속 3회 동일하게 인식됐을 때만
+                              // 경로 계획에 반영
+                              if (
+                                  f.stable >= 3 &&
+                                  f.t != usedT
+                              ) {
+
                                   if (rest0 > 0) {
-                                      // 진행 중인 계획과 실제 화면 비교
-                                      val ap = idxAt(f.t - LS)
+
+                                      val ap =
+                                          idxAt(f.t - LS)
 
                                       var tail: List<Int>? = null
 
                                       for (
                                           sh in intArrayOf(
-                                              0, -1, 1, -2, 2, -3, 3
+                                              0, -1, 1,
+                                              -2, 2, -3, 3
                                           )
                                       ) {
+
                                           val a = ap + sh
+
                                           val off = issued - a
 
                                           if (
                                               a < 0 ||
                                               a > issued ||
                                               off >= f.dirs.size
-                                          ) continue
+                                          ) {
+                                              continue
+                                          }
 
                                           if (
                                               a >= 1 &&
                                               f.face != 0 &&
                                               P[a - 1] != f.face
-                                          ) continue
+                                          ) {
+                                              continue
+                                          }
 
                                           val rest =
                                               f.dirs.subList(
@@ -859,19 +978,24 @@ jobs:
                                                   issued + m
                                               )
                                           ) {
-                                              val tl = rest.subList(
-                                                  minOf(
-                                                      rest0,
+
+                                              val tl =
+                                                  rest.subList(
+                                                      minOf(
+                                                          rest0,
+                                                          rest.size
+                                                      ),
                                                       rest.size
-                                                  ),
-                                                  rest.size
-                                              )
+                                                  )
 
                                               val t0 = tail
 
                                               if (t0 == null) {
+
                                                   tail = tl
+
                                               } else {
+
                                                   var i = 0
 
                                                   while (
@@ -882,7 +1006,8 @@ jobs:
                                                       i++
                                                   }
 
-                                                  tail = t0.subList(0, i)
+                                                  tail =
+                                                      t0.subList(0, i)
                                               }
                                           }
                                       }
@@ -897,18 +1022,18 @@ jobs:
                                       }
 
                                       usedT = f.t
+
                                   } else if (
                                       (
                                           f.t > lastTap + LAT ||
                                           now - lastTap > 350
                                       ) &&
-                                      (
-                                          f.stable >= 2 ||
-                                          now - f.t > 60
-                                      )
+                                      f.stable >= 3
                                   ) {
-                                      // 화면이 멈춘 뒤 새 계획 생성
+
+                                      // 안정적으로 확인된 경로만 추가
                                       usedT = f.t
+
                                       P.addAll(f.dirs)
 
                                       if (f.face != 0) {
@@ -918,7 +1043,9 @@ jobs:
                               }
                           }
 
+                          // 터치 실행
                           if (issued < P.size) {
+
                               val d = P[issued]
 
                               val turn =
@@ -931,12 +1058,14 @@ jobs:
                               val ts = TapService.inst
 
                               if (turn) {
+
                                   ts?.tap(
                                       185f * fx,
                                       1950f * fy
                                   )
 
                                   if (!TURN_CLIMBS) {
+
                                       Thread.sleep(GAP)
 
                                       ts?.tap(
@@ -944,7 +1073,9 @@ jobs:
                                           1950f * fy
                                       )
                                   }
+
                               } else {
+
                                   ts?.tap(
                                       895f * fx,
                                       1950f * fy
@@ -954,21 +1085,27 @@ jobs:
                               face = d
                               issued++
 
-                              lastTap = SystemClock.uptimeMillis()
+                              lastTap =
+                                  SystemClock.uptimeMillis()
+
                               tapT.add(lastTap)
 
                               Thread.sleep(GAP)
+
                           } else {
+
                               Thread.sleep(3)
                           }
 
                       } catch (e: Exception) {
+
                           Thread.sleep(30)
                       }
                   }
               }
 
               override fun onDestroy() {
+
                   run = false
 
                   try {
