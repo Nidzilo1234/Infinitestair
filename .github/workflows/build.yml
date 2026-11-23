@@ -50,8 +50,8 @@ jobs:
                   applicationId = "bot.stairs"
                   minSdk = 26
                   targetSdk = 34
-                  versionCode = 2
-                  versionName = "2"
+                  versionCode = 3
+                  versionName = "3"
               }
               compileOptions {
                   sourceCompatibility = JavaVersion.VERSION_17
@@ -123,24 +123,27 @@ jobs:
           import java.nio.ByteBuffer
           import kotlin.math.abs
 
-          // ===== 조절용 설정값 =====
+          // ===== 설정 =====
 
           const val GAP = 70L
-          const val LAT = 150L
           const val LS = 90L
           const val TURN_CLIMBS = true
 
-          // 발판 인식 기준
-          const val MF = 0.48f
-          const val SOFT = 0.36f
-          const val MARGIN = 0.12f
+          // 기존 인식 기준으로 복구
+          const val MF = 0.50f
+          const val SOFT = 0.27f
+          const val MARGIN = 0.15f
 
-          // 발판 모양 기준 데이터
+          // 경로 관리
+          const val MAX_QUEUE = 24
+          const val REFILL_AT = 6
+
+          // 템플릿
           const val H1 =
               "35835836936947b9cf9cf9cf47b9cf9cfacfacfacfacf37cacf9cf9cf" +
               "24624624624647bacf7ae7ae47b7ae7af7af7af8ae8ae37cacf8ad8ad" +
               "24624623623646aacf7af7af47b8af7af7af7af7af7af37cacf8ae8ae" +
-              "24624623623646aacf7af7af47b8af7af7af7af8af37cacf8ae8ae" +
+              "24624623623646aacf7af7af47b8af7af7af7af7af8af37cacf8ae8ae" +
               "12312312312323537c37c37c37c37c37c37c37c37c37c37c37c37c37c" +
               "35735735735746aacfacfacfacfacfacf37cacfacfacfacfacf9cf9cf" +
               "24624624624646aacf8af8af8af7af7af37cacf8af8af8af8af7af7af" +
@@ -169,7 +172,6 @@ jobs:
               "934934d47e69e69d47d47d47d47d47d47e69d47e79e7be7bd47f9be9b" +
               "934934d47e6ae6ae69e69e69f7af7bf7be79f69e79e79e7bf7bf9bf9b"
 
-          // 템플릿 데이터
           fun dec(h: String): IntArray {
               return IntArray(513) {
                   val c = h.getOrNull(it) ?: '8'
@@ -321,6 +323,7 @@ jobs:
 
               var W = 0
               var H = 0
+              var lastAnalysisTime = 0L
 
               override fun onBind(i: Intent?): IBinder? = null
 
@@ -487,6 +490,16 @@ jobs:
                   } ?: return
 
                   try {
+
+                      // 분석 빈도를 약 40FPS로 제한해 부하 감소
+                      val now = SystemClock.uptimeMillis()
+
+                      if (now - lastAnalysisTime < 25L) {
+                          return
+                      }
+
+                      lastAnalysisTime = now
+
                       val pl = img.planes[0]
 
                       val a = analyze(
@@ -496,28 +509,34 @@ jobs:
                       )
 
                       val o = fr
-                      val now = SystemClock.uptimeMillis()
+                      val stamp = SystemClock.uptimeMillis()
 
                       if (a == null) {
+
                           fr = Fr(
                               false,
                               0,
                               emptyList(),
-                              now,
+                              stamp,
                               0
                           )
+
                       } else {
 
+                          // 전체 경로가 아니라 앞의 두 방향을 기준으로
+                          // 프레임 안정도를 계산
                           val same =
                               o.ok &&
                               o.face == a.first &&
-                              o.dirs == a.second
+                              o.dirs.isNotEmpty() &&
+                              a.second.isNotEmpty() &&
+                              o.dirs.take(2) == a.second.take(2)
 
                           fr = Fr(
                               true,
                               a.first,
                               a.second,
-                              now,
+                              stamp,
                               if (same) o.stable + 1 else 1
                           )
                       }
@@ -542,8 +561,6 @@ jobs:
                   val t1 = TPL[1]
                   val t2 = TPL[2]
 
-                  // 기존 RGB 템플릿 비교 방식 유지
-                  // 공간 분포 검사 및 색상 제외 조건 없음
                   fun score(cx: Int, cy: Int): Float {
 
                       var n = 0
@@ -561,6 +578,9 @@ jobs:
                               val x = ((cx + dx) * fx).toInt()
                               val y = ((cy + dy) * fy).toInt()
 
+                              // 템플릿 위치는 화면 밖이어도 증가시킴
+                              val q = i * 3
+
                               if (x in 0 until W && y in 0 until H) {
 
                                   val o = y * rs + x * ps
@@ -568,8 +588,6 @@ jobs:
                                   val r = buf.get(o).toInt() and 255
                                   val g = buf.get(o + 1).toInt() and 255
                                   val b = buf.get(o + 2).toInt() and 255
-
-                                  val q = i * 3
 
                                   val d0 =
                                       abs(r - t0[q]) +
@@ -611,7 +629,7 @@ jobs:
                       return best.toFloat() / n
                   }
 
-                  // 화면 이동에 따른 좌표 보정
+                  // 위치 보정
                   var ox = 0
                   var oy = 0
 
@@ -623,13 +641,13 @@ jobs:
                   if (s1 < MF) {
 
                       var best = s1
-                      var by = -24
+                      var bestX = 0
+                      var bestY = 0
 
-                      while (by <= 24) {
+                      // 넓은 범위를 성긴 간격으로 탐색
+                      for (by in -24..24 step 12) {
 
-                          var bx = -36
-
-                          while (bx <= 36) {
+                          for (bx in -36..36 step 12) {
 
                               val v = maxOf(
                                   score(375 + bx, 1408 + by),
@@ -638,23 +656,42 @@ jobs:
 
                               if (v > best) {
                                   best = v
-                                  ox = bx
-                                  oy = by
+                                  bestX = bx
+                                  bestY = by
                               }
-
-                              bx += 6
                           }
-
-                          by += 6
                       }
 
-                      if (best < MF) {
-                          ox = 0
-                          oy = 0
+                      // 가장 좋은 위치 주변만 세밀하게 재검사
+                      if (best >= MF) {
+
+                          var fineBest = best
+                          var fineX = bestX
+                          var fineY = bestY
+
+                          for (by in (bestY - 6)..(bestY + 6) step 6) {
+
+                              for (bx in (bestX - 6)..(bestX + 6) step 6) {
+
+                                  val v = maxOf(
+                                      score(375 + bx, 1408 + by),
+                                      score(705 + bx, 1408 + by)
+                                  )
+
+                                  if (v > fineBest) {
+                                      fineBest = v
+                                      fineX = bx
+                                      fineY = by
+                                  }
+                              }
+                          }
+
+                          ox = fineX
+                          oy = fineY
                       }
                   }
 
-                  // 현재 바라보는 방향
+                  // 현재 방향
                   val sa = score(
                       375 + ox,
                       1588 + oy
@@ -671,6 +708,7 @@ jobs:
                       else -> 0
                   }
 
+                  // 다음 계단 방향을 최대 10개까지 탐색
                   val dirs = ArrayList<Int>()
 
                   var col = 0
@@ -721,12 +759,14 @@ jobs:
                   }
               }
 
-              // 이동 계획 및 터치 실행
+              // 경로 연결 및 터치 실행
               fun loop() {
 
                   val fx = W / 1080f
                   val fy = H / 2340f
 
+                  // P: 앞으로 실행할 경로
+                  // issued: 이미 실행한 경로의 개수
                   val P = ArrayList<Int>()
                   val tapT = ArrayList<Long>()
 
@@ -737,6 +777,11 @@ jobs:
                   var badSince = 0L
                   var lastUi = 0L
                   var was = false
+
+                  // 새 경로 후보를 여러 프레임에서 비교
+                  var candidateTail: List<Int>? = null
+                  var candidateHits = 0
+                  var candidateAt = 0L
 
                   fun idxAt(t: Long): Int {
 
@@ -750,6 +795,39 @@ jobs:
                       }
 
                       return c
+                  }
+
+                  // 두 경로가 처음으로 달라지는 지점 전까지 반환
+                  fun commonPrefix(
+                      a: List<Int>,
+                      b: List<Int>
+                  ): List<Int> {
+
+                      val out = ArrayList<Int>()
+                      val n = minOf(a.size, b.size)
+
+                      for (i in 0 until n) {
+                          if (a[i] != b[i]) break
+                          out.add(a[i])
+                      }
+
+                      return out
+                  }
+
+                  // 경로 버퍼가 넘치지 않도록 추가
+                  fun addSteps(steps: List<Int>) {
+
+                      val remaining = P.size - issued
+                      val room = MAX_QUEUE - remaining
+
+                      val count = minOf(
+                          room.coerceAtLeast(0),
+                          steps.size
+                      )
+
+                      for (i in 0 until count) {
+                          P.add(steps[i])
+                      }
                   }
 
                   while (run) {
@@ -776,11 +854,16 @@ jobs:
                               usedT = 0L
                               lastTap = 0L
                               badSince = 0L
+
+                              candidateTail = null
+                              candidateHits = 0
+                              candidateAt = 0L
                           }
 
                           val f = fr
                           val rest0 = P.size - issued
 
+                          // 상태 표시
                           if (now - lastUi > 300) {
 
                               lastUi = now
@@ -788,7 +871,7 @@ jobs:
                               val st =
                                   (if (f.ok) "인식O" else "인식X") +
                                   " 안정도" + f.stable +
-                                  " 남은" + rest0
+                                  " 경로" + rest0
 
                               ui.post {
                                   tv?.text = st
@@ -801,9 +884,10 @@ jobs:
                                   badSince = now
                               }
 
+                              // 경로가 없고 장시간 인식 실패한 경우만 초기화
                               if (
                                   rest0 == 0 &&
-                                  now - badSince > 800
+                                  now - badSince > 1000
                               ) {
 
                                   P.clear()
@@ -811,20 +895,46 @@ jobs:
 
                                   issued = 0
                                   face = 0
+
+                                  candidateTail = null
+                                  candidateHits = 0
                               }
 
                           } else {
 
                               badSince = 0L
 
-                              // 안정도 3회 대기 없이 새 프레임 반영
                               if (f.t != usedT) {
 
-                                  if (rest0 > 0) {
+                                  if (rest0 == 0) {
 
+                                      // 새 경로 시작
+                                      // 앞의 두 방향이 연속 프레임에서
+                                      // 확인된 경우에만 경로 확보
+                                      if (
+                                          f.stable >= 2 &&
+                                          f.dirs.isNotEmpty() &&
+                                          f.t >= lastTap + 15L
+                                      ) {
+
+                                          addSteps(f.dirs)
+
+                                          if (f.face != 0) {
+                                              face = f.face
+                                          }
+
+                                          candidateTail = null
+                                          candidateHits = 0
+                                          candidateAt = 0L
+                                      }
+
+                                  } else if (rest0 <= REFILL_AT) {
+
+                                      // 남은 경로가 6개 이하일 때
+                                      // 다음 경로를 미리 연결
                                       val ap = idxAt(f.t - LS)
 
-                                      var tail: List<Int>? = null
+                                      var rawTail: List<Int>? = null
 
                                       for (
                                           sh in intArrayOf(
@@ -839,94 +949,143 @@ jobs:
                                           if (
                                               a < 0 ||
                                               a > issued ||
+                                              off < 0 ||
                                               off >= f.dirs.size
                                           ) {
                                               continue
                                           }
 
-                                          if (
-                                              a >= 1 &&
-                                              f.face != 0 &&
-                                              P[a - 1] != f.face
-                                          ) {
+                                          // 현재 남은 경로 전체와
+                                          // 새 화면의 경로가 일치해야 함
+                                          val available =
+                                              f.dirs.size - off
+
+                                          if (available < rest0) {
                                               continue
                                           }
 
-                                          val rest = f.dirs.subList(
-                                              off,
-                                              f.dirs.size
-                                          )
-
-                                          val m = minOf(
-                                              rest.size,
-                                              rest0
-                                          )
-
-                                          // 경로 2개 이상 일치하면 연결
-                                          if (
-                                              m >= 2 &&
-                                              rest.subList(0, m) ==
+                                          val current =
                                               P.subList(
                                                   issued,
-                                                  issued + m
+                                                  P.size
                                               )
+
+                                          val observed =
+                                              f.dirs.subList(
+                                                  off,
+                                                  off + rest0
+                                              )
+
+                                          if (current != observed) {
+                                              continue
+                                          }
+
+                                          val tl =
+                                              f.dirs.subList(
+                                                  off + rest0,
+                                                  f.dirs.size
+                                              ).toList()
+
+                                          if (tl.isEmpty()) {
+                                              continue
+                                          }
+
+                                          rawTail =
+                                              if (rawTail == null) {
+                                                  tl
+                                              } else {
+                                                  commonPrefix(rawTail, tl)
+                                              }
+                                      }
+
+                                      // 새 경로가 연속 프레임에서
+                                      // 일치할 때만 실제 버퍼에 추가
+                                      if (
+                                          rawTail != null &&
+                                          rawTail.isNotEmpty()
+                                      ) {
+
+                                          val previous = candidateTail
+
+                                          if (
+                                              previous == null ||
+                                              now - candidateAt > 100L
                                           ) {
 
-                                              val tl = rest.subList(
-                                                  minOf(rest0, rest.size),
-                                                  rest.size
-                                              )
+                                              candidateTail = rawTail
+                                              candidateHits = 1
 
-                                              val t0 = tail
+                                          } else {
 
-                                              if (t0 == null) {
+                                              val common =
+                                                  commonPrefix(
+                                                      previous,
+                                                      rawTail
+                                                  )
 
-                                                  tail = tl
+                                              if (common.isNotEmpty()) {
+
+                                                  candidateTail = common
+                                                  candidateHits++
 
                                               } else {
 
-                                                  var i = 0
-
-                                                  while (
-                                                      i < t0.size &&
-                                                      i < tl.size &&
-                                                      t0[i] == tl[i]
-                                                  ) {
-                                                      i++
-                                                  }
-
-                                                  tail = t0.subList(0, i)
+                                                  candidateTail = rawTail
+                                                  candidateHits = 1
                                               }
                                           }
+
+                                          candidateAt = now
+
+                                          if (candidateHits >= 2) {
+
+                                              val confirmed =
+                                                  candidateTail
+
+                                              if (
+                                                  confirmed != null &&
+                                                  confirmed.isNotEmpty()
+                                              ) {
+                                                  addSteps(confirmed)
+                                              }
+
+                                              candidateTail = null
+                                              candidateHits = 0
+                                              candidateAt = 0L
+                                          }
+
+                                      } else if (
+                                          candidateAt != 0L &&
+                                          now - candidateAt > 100L
+                                      ) {
+
+                                          candidateTail = null
+                                          candidateHits = 0
+                                          candidateAt = 0L
                                       }
 
-                                      val tt = tail
+                                  } else {
 
-                                      if (tt != null && tt.isNotEmpty()) {
-                                          P.addAll(tt)
-                                      }
-
-                                      usedT = f.t
-
-                                  } else if (
-                                      now - lastTap > LAT &&
-                                      f.dirs.isNotEmpty()
-                                  ) {
-
-                                      // 기존 경로가 끝나면 새 경로 즉시 확보
-                                      usedT = f.t
-
-                                      P.addAll(f.dirs)
-
-                                      if (f.face != 0) {
-                                          face = f.face
-                                      }
+                                      // 경로가 충분히 남아 있으면
+                                      // 새 경로 후보를 초기화
+                                      candidateTail = null
+                                      candidateHits = 0
+                                      candidateAt = 0L
                                   }
+
+                                  usedT = f.t
                               }
                           }
 
                           // 터치 실행
                           if (issued < P.size) {
+
+                              val ts = TapService.inst
+
+                              if (ts == null) {
+                                  Thread.sleep(20)
+                                  continue
+                              }
 
                               val d = P[issued]
 
@@ -937,11 +1096,9 @@ jobs:
                                       d != face
                                   }
 
-                              val ts = TapService.inst
-
                               if (turn) {
 
-                                  ts?.tap(
+                                  ts.tap(
                                       185f * fx,
                                       1950f * fy
                                   )
@@ -950,7 +1107,7 @@ jobs:
 
                                       Thread.sleep(GAP)
 
-                                      ts?.tap(
+                                      ts.tap(
                                           895f * fx,
                                           1950f * fy
                                       )
@@ -958,7 +1115,7 @@ jobs:
 
                               } else {
 
-                                  ts?.tap(
+                                  ts.tap(
                                       895f * fx,
                                       1950f * fy
                                   )
@@ -970,6 +1127,19 @@ jobs:
                               lastTap = SystemClock.uptimeMillis()
                               tapT.add(lastTap)
 
+                              // 오래된 실행 기록을 정리
+                              if (issued >= 120) {
+
+                                  P.subList(0, issued).clear()
+                                  tapT.subList(0, issued).clear()
+
+                                  issued = 0
+
+                                  candidateTail = null
+                                  candidateHits = 0
+                                  candidateAt = 0L
+                              }
+
                               Thread.sleep(GAP)
 
                           } else {
@@ -979,7 +1149,7 @@ jobs:
 
                       } catch (e: Exception) {
 
-                          Thread.sleep(30)
+                          Thread.sleep(20)
                       }
                   }
               }
